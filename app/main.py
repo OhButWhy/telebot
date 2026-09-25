@@ -1,26 +1,26 @@
-import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
 
 from app.config import settings
-from app.bot.handlers import router as bot_router  # подключаем роутер
+from app.bot.handlers import router as bot_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     bot = Bot(token=settings.telegram_bot_token)
-    # Важно: Render даёт свой URL,но для теста локально можно оставить заглушку
-    webhook_url = settings.webhook_url or f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}"
-    await bot.set_webhook(f"{webhook_url}/webhook")
+    if settings.webhook_url:
+        await bot.set_webhook(f"{settings.webhook_url}/webhook")
     app.state.bot = bot
     yield
     await bot.delete_webhook()
 
+
 app = FastAPI(lifespan=lifespan)
+
 dp = Dispatcher()
-dp.include_router(bot_router)  # регистрируем все хендлеры из handlers.py
+dp.include_router(bot_router)
 
 
 @app.post("/webhook")
