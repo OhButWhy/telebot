@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 
+    @property
+    def webhook_url(self) -> str | None:
+        return self._env.get("WEBHOOK_URL")
+
     class Config:
         env_file = ".env"
 
