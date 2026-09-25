@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+aiogram>=3.0.0
+sqlalchemy[asyncio]
+asyncpg
+alembic
+boto3
+pydantic-settings
+python-dotenv
