@@ -21,9 +21,12 @@ if not db_url:
     db_url = os.environ.get("DATABASE_URL", "")
 assert db_url, "DATABASE_URL не найдена! Проверь переменную окружения или .env"
 
-# Миграции выполняются синхронным движком:
-# asyncpg драйвер для этого не годится, убираем +asyncpg
-sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+
+sync_url = (
+    db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+          .replace("postgres://", "postgresql+psycopg://")
+)
+
 config.set_main_option("sqlalchemy.url", sync_url)
 
 if config.config_file_name is not None:

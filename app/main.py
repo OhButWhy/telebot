@@ -27,7 +27,8 @@ dp.include_router(bot_router)
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    update = Update.model_validate(await request.json(), context={"bot": request.app.state.bot})
+    update = Update.model_validate(await request.json(),
+                                   context={"bot": request.app.state.bot})
     await dp.feed_update(request.app.state.bot, update)
     return {"ok": True}
 
