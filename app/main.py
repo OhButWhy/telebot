@@ -6,6 +6,12 @@ from aiogram.types import Update
 
 from app.config import settings
 from app.bot.handlers import router as bot_router
+import logging
+
+
+# Включаем логирование aiogram
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aiogram")
 
 
 @asynccontextmanager
@@ -23,6 +29,12 @@ app = FastAPI(lifespan=lifespan)
 
 dp = Dispatcher()
 dp.include_router(bot_router)
+
+
+@dp.errors()
+async def errors_handler(event, exception):
+    logger.error("AIogram handler error: %r", exception, exc_info=True)
+    return True
 
 
 @app.post("/webhook")
