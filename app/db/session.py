@@ -1,17 +1,22 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from app.config import settings
 
-db_url = settings.database_url.split("?")[0]
+db_url = make_url(settings.async_db_url)
+sslmode = db_url.query.get("sslmode")
+if sslmode:
+    db_url = db_url.update_query_dict({}, append=False)
 
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+connect_args = {"ssl": True} if sslmode == "require" else {}
 
 engine = create_async_engine(
     db_url,
     echo=False,
-    connect_args={"ssl": "require"},
+    connect_args=connect_args,
 )
 
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False,

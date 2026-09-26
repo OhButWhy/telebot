@@ -1,6 +1,9 @@
-from sqlalchemy import select
+from uuid import uuid4
+
+from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import User, Material
+from sqlalchemy.orm import selectinload
+from app.db.models import Material, Transaction, User
 
 
 async def get_user_by_tg(session: AsyncSession, tg_id: str):
@@ -34,10 +37,79 @@ async def create_material(session: AsyncSession, seller_id: int,
         work_type="Документ",
         price=price,
         description="Загружено через бота",
-        file_key_s3=file_id,  # это и есть наш file_id из Telegram
+        telegram_file_id=file_id,
         status="active"
     )
     session.add(material)
     await session.commit()
     await session.refresh(material)
     return material
+
+
+async def list_materials(session: AsyncSession, university: str,
+                         limit: int = 10, offset: int = 0):
+    query = (
+        select(Material)
+        .join(Material.seller)
+        .where(
+            User.university == university,
+            Material.status == "active",
+        )
+        .order_by(Material.created_at.desc(), Material.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def get_material(session: AsyncSession, material_id: int):
+    result = await session.execute(
+        select(Material)
+        .options(selectinload(Material.seller))
+        .where(Material.id == material_id)
+    )
+    return result.scalars().first()
+
+
+async def get_or_create_transaction(session: AsyncSession, material_id: int,
+                                    buyer_id: int):
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.material_id == material_id,
+            Transaction.buyer_id == buyer_id,
+        )
+    )
+    transaction = result.scalars().first()
+    if transaction:
+        return transaction
+
+    transaction = Transaction(
+        material_id=material_id,
+        buyer_id=buyer_id,
+        status="delivered",
+        amount=0,
+    )
+    session.add(transaction)
+    await session.commit()
+    await session.refresh(transaction)
+    return transaction
+
+
+async def delete_user_account(session: AsyncSession, tg_id: str):
+    user = await get_user_by_tg(session, tg_id)
+    if not user:
+        return False
+
+    await session.execute(
+        update(Material)
+        .where(Material.seller_id == user.id)
+        .values(status="deleted")
+    )
+    user.tg_id = f"deleted_{uuid4().hex}"
+    user.username = None
+    user.university = "Удалённый пользователь"
+    user.faculty = None
+    user.course = None
+    await session.commit()
+    return True

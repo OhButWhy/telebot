@@ -1,5 +1,14 @@
-from sqlalchemy import Column, Integer, String, Float, \
-                         DateTime, ForeignKey, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -40,7 +49,7 @@ class Material(Base):
     work_type = Column(String, nullable=False)        # конспект/лаба/курсовая
     price = Column(Float, nullable=False)             # Цена в рублях
     description = Column(Text, nullable=True)
-    file_key_s3 = Column(String, nullable=False)     # Ключ файла в S3
+    telegram_file_id = Column(String, nullable=False)
     status = Column(String, default="active", nullable=False)  # active/deleted
 
     seller = relationship("User", back_populates="materials")
@@ -52,6 +61,10 @@ class Material(Base):
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    __table_args__ = (
+        UniqueConstraint("material_id", "buyer_id",
+                         name="uq_transactions_material_buyer"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     material_id = Column(Integer,
@@ -69,4 +82,24 @@ class Transaction(Base):
     buyer = relationship("User",
                          foreign_keys=[buyer_id], back_populates="purchases")
 
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(
+        Integer,
+        ForeignKey("transactions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    text = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
