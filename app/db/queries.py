@@ -95,6 +95,15 @@ async def get_material(session: AsyncSession, material_id: int):
     return result.scalars().first()
 
 
+async def list_user_materials(session: AsyncSession, seller_id: int):
+    result = await session.execute(
+        select(Material)
+        .where(Material.seller_id == seller_id)
+        .order_by(Material.created_at.desc(), Material.id.desc())
+    )
+    return result.scalars().all()
+
+
 async def get_or_create_transaction(session: AsyncSession, material_id: int,
                                     buyer_id: int):
     result = await session.execute(

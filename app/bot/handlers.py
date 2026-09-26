@@ -16,6 +16,7 @@ from app.db.queries import (
     get_material,
     get_or_create_transaction,
     get_user_by_tg,
+    list_user_materials,
     list_materials,
     update_user_profile,
 )
@@ -26,6 +27,15 @@ router = Router()
 
 
 def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Открыть карточку",
+            callback_data=f"material:{material_id}",
+        ),
+    ]])
+
+
+def material_detail_keyboard(material_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text="Получить материал",
@@ -430,3 +440,49 @@ async def get_material_callback(callback: CallbackQuery):
         document=material.telegram_file_id,
     )
     await callback.answer("Материал отправлен")
+
+
+@router.callback_query(F.data.startswith("material:"))
+async def material_detail_callback(callback: CallbackQuery):
+    material_id = int(callback.data.split(":", 1)[1])
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(callback.from_user.id))
+        material = await get_material(session, material_id)
+        if not user or not material or material.status != "active":
+            await callback.answer("Материал недоступен.", show_alert=True)
+            return
+        if material.seller.university != user.university:
+            await callback.answer("Материал недоступен для твоего вуза.",
+                                  show_alert=True)
+            return
+
+    description = material.description or "Описание отсутствует."
+    await callback.message.answer(
+        f"{material.title}\n"
+        f"Предмет: {material.subject}\n"
+        f"Преподаватель: {material.professor}\n"
+        f"Тип: {material.work_type}\n"
+        f"Описание: {description}",
+        reply_markup=material_detail_keyboard(material.id),
+    )
+    await callback.answer()
+
+
+@router.message(Command("my_materials"))
+async def cmd_my_materials(message: Message):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        if not user:
+            await message.answer("Сначала нажми /start, для регистрации!")
+            return
+        materials = await list_user_materials(session, user.id)
+
+    if not materials:
+        await message.answer("Ты ещё не загрузил материалы.")
+        return
+    for material in materials:
+        await message.answer(
+            f"{material.title}\n"
+            f"Предмет: {material.subject}\n"
+            f"Статус: {material.status}",
+        )
