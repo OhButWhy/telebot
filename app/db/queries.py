@@ -3,11 +3,16 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from app.db.models import Material, Transaction, User
+from app.db.models import ChatMessage, Material, Transaction, User
 
 
 async def get_user_by_tg(session: AsyncSession, tg_id: str):
     result = await session.execute(select(User).where(User.tg_id == tg_id))
+    return result.scalars().first()
+
+
+async def get_user_by_id(session: AsyncSession, user_id: int):
+    result = await session.execute(select(User).where(User.id == user_id))
     return result.scalars().first()
 
 
@@ -126,6 +131,55 @@ async def get_or_create_transaction(session: AsyncSession, material_id: int,
     await session.commit()
     await session.refresh(transaction)
     return transaction
+
+
+async def list_user_transactions(session: AsyncSession, buyer_id: int):
+    result = await session.execute(
+        select(Transaction)
+        .options(selectinload(Transaction.material))
+        .where(Transaction.buyer_id == buyer_id)
+        .order_by(Transaction.created_at.desc(), Transaction.id.desc())
+    )
+    return result.scalars().all()
+
+
+async def get_transaction_for_user(session: AsyncSession,
+                                   transaction_id: int, user_id: int):
+    result = await session.execute(
+        select(Transaction)
+        .options(
+            selectinload(Transaction.material).selectinload(Material.seller),
+        )
+        .where(
+            Transaction.id == transaction_id,
+            (Transaction.buyer_id == user_id)
+            | (Material.seller_id == user_id),
+        )
+        .join(Transaction.material)
+    )
+    return result.scalars().first()
+
+
+async def create_chat_message(session: AsyncSession, transaction_id: int,
+                              sender_id: int, text: str):
+    chat_message = ChatMessage(
+        transaction_id=transaction_id,
+        sender_id=sender_id,
+        text=text,
+    )
+    session.add(chat_message)
+    await session.commit()
+    await session.refresh(chat_message)
+    return chat_message
+
+
+async def list_chat_messages(session: AsyncSession, transaction_id: int):
+    result = await session.execute(
+        select(ChatMessage)
+        .where(ChatMessage.transaction_id == transaction_id)
+        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+    )
+    return result.scalars().all()
 
 
 async def delete_user_account(session: AsyncSession, tg_id: str):

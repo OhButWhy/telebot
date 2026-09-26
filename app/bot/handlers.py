@@ -12,15 +12,20 @@ from app.db.session import async_session_maker
 from app.db.queries import (
     create_material,
     create_user,
+    create_chat_message,
     delete_user_account,
     get_material,
     get_or_create_transaction,
+    get_transaction_for_user,
+    get_user_by_id,
     get_user_by_tg,
+    list_chat_messages,
     list_user_materials,
+    list_user_transactions,
     list_materials,
     update_user_profile,
 )
-from app.bot.states import ProfileSetup, UploadMaterial
+from app.bot.states import ChatState, ProfileSetup, UploadMaterial
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -40,6 +45,15 @@ def material_detail_keyboard(material_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text="Получить материал",
             callback_data=f"get_material:{material_id}",
+        ),
+    ]])
+
+
+def chat_keyboard(transaction_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Написать продавцу",
+            callback_data=f"chat:{transaction_id}",
         ),
     ]])
 
@@ -433,11 +447,19 @@ async def get_material_callback(callback: CallbackQuery):
             await callback.answer("Материал недоступен для твоего вуза.",
                                   show_alert=True)
             return
-        await get_or_create_transaction(session, material.id, buyer.id)
+        transaction = await get_or_create_transaction(
+            session,
+            material.id,
+            buyer.id,
+        )
 
     await callback.message.bot.send_document(
         chat_id=callback.from_user.id,
         document=material.telegram_file_id,
+    )
+    await callback.message.answer(
+        "Можешь написать продавцу по этому материалу:",
+        reply_markup=chat_keyboard(transaction.id),
     )
     await callback.answer("Материал отправлен")
 
@@ -486,3 +508,96 @@ async def cmd_my_materials(message: Message):
             f"Предмет: {material.subject}\n"
             f"Статус: {material.status}",
         )
+
+
+@router.message(Command("my_purchases"))
+async def cmd_my_purchases(message: Message):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        if not user:
+            await message.answer("Сначала нажми /start, для регистрации!")
+            return
+        transactions = await list_user_transactions(session, user.id)
+
+    if not transactions:
+        await message.answer("Ты ещё не получал материалы.")
+        return
+    for transaction in transactions:
+        await message.answer(
+            f"Получен материал: {transaction.material.title}\n"
+            f"Статус: {transaction.status}\n"
+            f"Транзакция: {transaction.id}",
+            reply_markup=chat_keyboard(transaction.id),
+        )
+
+
+@router.callback_query(F.data.startswith("chat:"))
+async def open_chat(callback: CallbackQuery, state: FSMContext):
+    transaction_id = int(callback.data.split(":", 1)[1])
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(callback.from_user.id))
+        transaction = await get_transaction_for_user(
+            session,
+            transaction_id,
+            user.id if user else -1,
+        )
+        if not user or not transaction:
+            await callback.answer("Чат недоступен.", show_alert=True)
+            return
+        messages = await list_chat_messages(session, transaction.id)
+
+    await state.set_state(ChatState.waiting_message)
+    await state.update_data(transaction_id=transaction.id)
+    if messages:
+        history = "\n".join(
+            f"{'Ты' if item.sender_id == user.id else 'Собеседник'}: "
+            f"{item.text}"
+            for item in messages[-10:]
+        )
+        await callback.message.answer(f"История чата:\n{history}")
+    await callback.message.answer(
+        "Напиши сообщение продавцу. Для выхода используй /cancel."
+    )
+    await callback.answer()
+
+
+@router.message(ChatState.waiting_message, F.text)
+async def send_chat_message(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if not text or len(text) > 2000:
+        await message.answer(
+            "Сообщение должно содержать от 1 до 2000 символов."
+        )
+        return
+
+    data = await state.get_data()
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        transaction = await get_transaction_for_user(
+            session,
+            data.get("transaction_id", -1),
+            user.id if user else -1,
+        )
+        if not user or not transaction:
+            await state.clear()
+            await message.answer("Чат недоступен.")
+            return
+        await create_chat_message(session, transaction.id, user.id, text)
+        recipient_id = (
+            transaction.material.seller_id
+            if user.id == transaction.buyer_id
+            else transaction.buyer_id
+        )
+        recipient = await get_user_by_id(session, recipient_id)
+
+    if not recipient or recipient.tg_id.startswith("deleted_"):
+        await message.answer("Собеседник удалил аккаунт.")
+        return
+    await message.bot.send_message(
+        chat_id=recipient.tg_id,
+        text=(
+            f"Новое сообщение по материалу «{transaction.material.title}»:\n"
+            f"{text}"
+        ),
+    )
+    await message.answer("Сообщение отправлено.")

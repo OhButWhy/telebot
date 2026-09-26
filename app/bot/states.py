@@ -14,3 +14,7 @@ class ProfileSetup(StatesGroup):
     waiting_university = State()
     waiting_faculty = State()
     waiting_course = State()
+
+
+class ChatState(StatesGroup):
+    waiting_message = State()
