@@ -27,6 +27,16 @@ async def create_user(session: AsyncSession, tg_id: str, username: str | None,
     return user
 
 
+async def update_user_profile(session: AsyncSession, user: User,
+                              university: str, faculty: str, course: int):
+    user.university = university
+    user.faculty = faculty
+    user.course = course
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
 async def create_material(session: AsyncSession, seller_id: int,
                           title: str, price: float, file_id: str,
                           subject: str = "Разное",

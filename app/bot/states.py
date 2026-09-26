@@ -8,3 +8,9 @@ class UploadMaterial(StatesGroup):
     waiting_professor = State()
     waiting_work_type = State()
     waiting_description = State()
+
+
+class ProfileSetup(StatesGroup):
+    waiting_university = State()
+    waiting_faculty = State()
+    waiting_course = State()
