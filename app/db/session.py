@@ -10,4 +10,5 @@ engine = create_async_engine(
     connect_args={"ssl": "require"},  # Render требует SSL
 )
 
-async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+async_session_maker = async_sessionmaker(engine, expire_on_commit=False,
+                                         class_=AsyncSession)

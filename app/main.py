@@ -12,13 +12,14 @@ from app.bot.handlers import router as bot_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     bot = Bot(token=settings.telegram_bot_token)
-    
+
     # Получаем адрес. RENDER_EXTERNAL_URL есть всегда у веб-сервисов
     webhook_base = os.getenv("RENDER_EXTERNAL_URL") or settings.webhook_url
-    
+
     if webhook_base:
         webhook_url = f"{webhook_base}/webhook"
         try:
@@ -34,17 +35,19 @@ async def lifespan(app: FastAPI):
 
     app.state.bot = bot
     yield
-    await bot.delete_webhook()
 
 app = FastAPI(lifespan=lifespan)
 dp = Dispatcher()
 dp.include_router(bot_router)
 
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    update = Update.model_validate(await request.json(), context={"bot": request.app.state.bot})
+    update = Update.model_validate(await request.json(),
+                                   context={"bot": request.app.state.bot})
     await dp.feed_update(request.app.state.bot, update)
     return {"ok": True}
+
 
 @app.get("/health")
 def health():
