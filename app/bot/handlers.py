@@ -34,6 +34,25 @@ def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def catalog_keyboard(offset: int, has_next: bool,
+                     search_term: str | None = None):
+    if not has_next and offset == 0:
+        return None
+    buttons = []
+    query_suffix = f":{search_term}" if search_term else ""
+    if offset > 0:
+        buttons.append(InlineKeyboardButton(
+            text="Назад",
+            callback_data=f"catalog:{max(0, offset - 10)}{query_suffix}",
+        ))
+    if has_next:
+        buttons.append(InlineKeyboardButton(
+            text="Дальше",
+            callback_data=f"catalog:{offset + 10}{query_suffix}",
+        ))
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
 def delete_account_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -283,18 +302,50 @@ async def upload_description(message: Message, state: FSMContext):
 
 @router.message(Command("catalog"))
 async def cmd_catalog(message: Message):
+    search_term = None
+    if message.text and " " in message.text:
+        search_term = message.text.split(" ", 1)[1].strip() or None
+    await send_catalog(message, search_term=search_term)
+
+
+@router.message(Command("search"))
+async def cmd_search(message: Message):
+    if not message.text or " " not in message.text:
+        await message.answer(
+            "Используй команду так: /search название предмета"
+        )
+        return
+    search_term = message.text.split(" ", 1)[1].strip()
+    if not search_term:
+        await message.answer("Напиши текст для поиска после команды /search.")
+        return
+    await send_catalog(message, search_term=search_term)
+
+
+async def send_catalog(message: Message, search_term: str | None = None,
+                       offset: int = 0):
     async with async_session_maker() as session:
         user = await get_user_by_tg(session, str(message.from_user.id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
-        materials = await list_materials(session, user.university)
+        materials = await list_materials(
+            session,
+            user.university,
+            search_term=search_term,
+            limit=11,
+            offset=offset,
+        )
 
     if not materials:
-        await message.answer("В каталоге пока нет материалов для твоего вуза.")
+        text = "Поиск ничего не нашёл." if search_term else (
+            "В каталоге пока нет материалов для твоего вуза."
+        )
+        await message.answer(text)
         return
 
-    for material in materials:
+    has_next = len(materials) > 10
+    for material in materials[:10]:
         await message.answer(
             f"{material.title}\n"
             f"Предмет: {material.subject}\n"
@@ -302,6 +353,23 @@ async def cmd_catalog(message: Message):
             f"Цена: {material.price:.0f} ₽",
             reply_markup=material_keyboard(material.id),
         )
+    await message.answer(
+        f"Страница {offset // 10 + 1}",
+        reply_markup=catalog_keyboard(offset, has_next, search_term),
+    )
+
+
+@router.callback_query(F.data.startswith("catalog:"))
+async def catalog_page(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+    offset = int(parts[1])
+    search_term = parts[2] if len(parts) == 3 else None
+    await callback.answer()
+    await send_catalog(
+        callback.message,
+        search_term=search_term,
+        offset=offset,
+    )
 
 
 @router.message(Command("delete_account"))
