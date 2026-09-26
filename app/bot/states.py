@@ -18,3 +18,7 @@ class ProfileSetup(StatesGroup):
 
 class ChatState(StatesGroup):
     waiting_message = State()
+
+
+class SearchState(StatesGroup):
+    waiting_query = State()

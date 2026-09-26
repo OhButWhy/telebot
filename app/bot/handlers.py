@@ -25,10 +25,51 @@ from app.db.queries import (
     list_materials,
     update_user_profile,
 )
-from app.bot.states import ChatState, ProfileSetup, UploadMaterial
+from app.bot.keyboards import MAIN_MENU
+from app.bot.states import ChatState, ProfileSetup, SearchState, UploadMaterial
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def show_main_menu(message: Message):
+    await message.answer("Главное меню:", reply_markup=MAIN_MENU)
+
+
+@router.message(F.text == "Каталог")
+async def menu_catalog(message: Message):
+    await cmd_catalog(message)
+
+
+@router.message(F.text == "Поиск")
+async def menu_search(message: Message, state: FSMContext):
+    await state.set_state(SearchState.waiting_query)
+    await message.answer("Введи название, предмет или преподавателя:")
+
+
+@router.message(F.text == "Загрузить")
+async def menu_upload(message: Message, state: FSMContext):
+    await start_upload(message, state)
+
+
+@router.message(F.text == "Мои материалы")
+async def menu_my_materials(message: Message):
+    await cmd_my_materials(message)
+
+
+@router.message(F.text == "Мои получения")
+async def menu_my_purchases(message: Message):
+    await cmd_my_purchases(message)
+
+
+@router.message(F.text.in_({"👤 Профиль", "⚙️ Профиль"}))
+async def menu_profile(message: Message, state: FSMContext):
+    await edit_profile(message, state)
+
+
+@router.message(F.text == "Чаты")
+async def menu_chats(message: Message):
+    await cmd_my_purchases(message)
 
 
 def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
@@ -120,6 +161,7 @@ async def cmd_start(message: Message, state: FSMContext):
                 await start_profile_setup(message, state)
             else:
                 await message.answer("Привет! Ты уже в системе.")
+                await show_main_menu(message)
 
 
 async def start_profile_setup(message: Message, state: FSMContext):
@@ -189,6 +231,7 @@ async def profile_course(message: Message, state: FSMContext):
     await message.answer(
         "Профиль сохранён. Теперь доступен каталог материалов."
     )
+    await show_main_menu(message)
 
 
 @router.message(Command("upload"))
@@ -343,6 +386,16 @@ async def cmd_search(message: Message):
     if not search_term:
         await message.answer("Напиши текст для поиска после команды /search.")
         return
+    await send_catalog(message, search_term=search_term)
+
+
+@router.message(SearchState.waiting_query, F.text)
+async def search_query(message: Message, state: FSMContext):
+    search_term = message.text.strip()
+    if not search_term:
+        await message.answer("Введи непустой поисковый запрос.")
+        return
+    await state.clear()
     await send_catalog(message, search_term=search_term)
 
 
