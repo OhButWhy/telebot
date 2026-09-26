@@ -28,15 +28,19 @@ async def create_user(session: AsyncSession, tg_id: str, username: str | None,
 
 
 async def create_material(session: AsyncSession, seller_id: int,
-                          title: str, price: float, file_id: str):
+                          title: str, price: float, file_id: str,
+                          subject: str = "Разное",
+                          professor: str = "Не указан",
+                          work_type: str = "Документ",
+                          description: str = ""):
     material = Material(
         seller_id=seller_id,
         title=title,
-        subject="Разное",
-        professor="Не указан",
-        work_type="Документ",
+        subject=subject,
+        professor=professor,
+        work_type=work_type,
         price=price,
-        description="Загружено через бота",
+        description=description,
         telegram_file_id=file_id,
         status="active"
     )

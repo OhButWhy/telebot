@@ -1,6 +1,7 @@
 import logging
 from aiogram import Router, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -17,6 +18,7 @@ from app.db.queries import (
     get_user_by_tg,
     list_materials,
 )
+from app.bot.states import UploadMaterial
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -67,26 +69,137 @@ async def cmd_start(message: Message):
             await message.answer("Привет! Ты уже в системе.")
 
 
-@router.message(F.document)
-async def handle_document(message: Message):
-    logger.info("DOCUMENT HANDLER: from %s", message.from_user.id)
+@router.message(Command("upload"))
+async def start_upload(message: Message, state: FSMContext):
+    if not await get_user_for_message(message):
+        await message.answer("Сначала нажми /start, для регистрации!")
+        return
+    await state.set_state(UploadMaterial.waiting_document)
+    await message.answer(
+        "Пришли документ PDF, DOC, DOCX, JPG, PNG или ZIP размером до 50 МБ."
+    )
+
+
+@router.message(Command("cancel"))
+async def cancel_action(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Текущее действие отменено.")
+
+
+async def get_user_for_message(message: Message):
     async with async_session_maker() as session:
-        seller = await get_user_by_tg(session, str(message.from_user.id))
-        if not seller:
-            await message.answer("Сначала нажми /start, для регистрации!")
-            return
+        return await get_user_by_tg(session, str(message.from_user.id))
+
+
+@router.message(UploadMaterial.waiting_document, F.document)
+async def upload_document(message: Message, state: FSMContext):
+    allowed_extensions = {"pdf", "doc", "docx", "jpg", "png", "zip"}
+    file_name = message.document.file_name or ""
+    extension = (
+        file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    )
+    if extension not in allowed_extensions:
+        await message.answer("Этот формат файла не поддерживается.")
+        return
+    if (
+        message.document.file_size
+        and message.document.file_size > 50 * 1024 * 1024
+    ):
+        await message.answer(
+            "Файл слишком большой. Максимальный размер: 50 МБ."
+        )
+        return
+
+    await state.update_data(file_id=message.document.file_id)
+    await state.set_state(UploadMaterial.waiting_title)
+    await message.answer("Введи название материала:")
+
+
+@router.message(UploadMaterial.waiting_document)
+async def upload_document_invalid(message: Message):
+    await message.answer(
+        "Нужно отправить документом файл поддерживаемого формата."
+    )
+
+
+@router.message(UploadMaterial.waiting_title, F.text)
+async def upload_title(message: Message, state: FSMContext):
+    title = message.text.strip()
+    if not title or len(title) > 200:
+        await message.answer("Название должно содержать от 1 до 200 символов.")
+        return
+    await state.update_data(title=title)
+    await state.set_state(UploadMaterial.waiting_subject)
+    await message.answer("Введи название предмета:")
+
+
+@router.message(UploadMaterial.waiting_subject, F.text)
+async def upload_subject(message: Message, state: FSMContext):
+    subject = message.text.strip()
+    if not subject or len(subject) > 100:
+        await message.answer("Предмет должен содержать от 1 до 100 символов.")
+        return
+    await state.update_data(subject=subject)
+    await state.set_state(UploadMaterial.waiting_professor)
+    await message.answer("Введи фамилию или имя преподавателя:")
+
+
+@router.message(UploadMaterial.waiting_professor, F.text)
+async def upload_professor(message: Message, state: FSMContext):
+    professor = message.text.strip()
+    if not professor or len(professor) > 100:
+        await message.answer(
+            "Имя преподавателя должно быть от 1 до 100 символов."
+        )
+        return
+    await state.update_data(professor=professor)
+    await state.set_state(UploadMaterial.waiting_work_type)
+    await message.answer("Введи тип работы, например: конспект, лабораторная:")
+
+
+@router.message(UploadMaterial.waiting_work_type, F.text)
+async def upload_work_type(message: Message, state: FSMContext):
+    work_type = message.text.strip()
+    if not work_type or len(work_type) > 100:
+        await message.answer(
+            "Тип работы должен содержать от 1 до 100 символов."
+        )
+        return
+    await state.update_data(work_type=work_type)
+    await state.set_state(UploadMaterial.waiting_description)
+    await message.answer("Добавь описание до 2000 символов или напиши «нет»:")
+
+
+@router.message(UploadMaterial.waiting_description, F.text)
+async def upload_description(message: Message, state: FSMContext):
+    description = message.text.strip()
+    if description.lower() == "нет":
+        description = ""
+    if len(description) > 2000:
+        await message.answer("Описание не должно быть длиннее 2000 символов.")
+        return
+
+    data = await state.update_data(description=description)
+    seller = await get_user_for_message(message)
+    if not seller:
+        await state.clear()
+        await message.answer("Сессия регистрации не найдена. Нажми /start.")
+        return
+
+    async with async_session_maker() as session:
         material = await create_material(
             session=session,
             seller_id=seller.id,
-            title=message.document.file_name,
-            price=100.0,
-            file_id=message.document.file_id,
+            title=data["title"],
+            price=0,
+            file_id=data["file_id"],
+            subject=data["subject"],
+            professor=data["professor"],
+            work_type=data["work_type"],
+            description=description,
         )
-        logger.info("Created material id=%s", material.id)
-        await message.answer(
-            f"* Материал «{material.title}» добавлен!\n"
-            f"ID в базе: {material.id}\nЦена: {material.price:.0f} ₽"
-        )
+    await state.clear()
+    await message.answer(f"Материал «{material.title}» добавлен в каталог.")
 
 
 @router.message(Command("catalog"))
