@@ -1312,16 +1312,21 @@ async def cmd_my_purchases(message: Message):
             await message.answer("Сначала нажми /start, для регистрации!")
             return
         transactions = await list_user_transactions(session, user.id)
+        threads = []
+        for transaction in transactions:
+            material = transaction.material
+            thread = await get_or_create_contact_thread(
+                session, material.id, user.id, material.seller_id
+            )
+            threads.append((material, thread))
 
-    if not transactions:
+    if not threads:
         await message.answer("Ты ещё не получал материалы.")
         return
-    for transaction in transactions:
+    for material, thread in threads:
         await message.answer(
-            f"Получен материал: {transaction.material.title}\n"
-            f"Статус: {transaction.status}\n"
-            f"Транзакция: {transaction.id}",
-            reply_markup=chat_keyboard(transaction.id),
+            f"Получен материал: {material.title}",
+            reply_markup=chat_keyboard(thread.id, "💬 Написать продавцу"),
         )
 
 
