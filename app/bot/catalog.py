@@ -13,7 +13,6 @@ from app.bot.common import PAGE_SIZE, _page_row, materials_word, nav_keyboard
 from app.bot.keyboards import (
     author_name,
     browse_subject_keyboard,
-    topic_keyboard,
 )
 from app.db.queries import (
     count_materials,
