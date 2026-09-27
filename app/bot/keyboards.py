@@ -51,8 +51,20 @@ EDIT_FILE_MENU = ReplyKeyboardMarkup(
 )
 
 
+def _loaded(instance, attribute: str):
+    """Returns the value only when already loaded, else None.
+
+    Rendering happens after the session closes, so touching an unloaded
+    lazy relationship would raise DetachedInstanceError.
+    """
+    try:
+        return getattr(instance, attribute)
+    except Exception:
+        return None
+
+
 def author_name(material) -> str:
-    seller = material.seller
+    seller = _loaded(material, "seller")
     if seller is None:
         return "неизвестный автор"
     if seller.username:
@@ -64,9 +76,10 @@ def author_name(material) -> str:
 
 def material_subject(material) -> str:
     """Catalog subject is the source of truth; free-text is the fallback."""
-    if material.subject_ref is not None:
-        return material.subject_ref.name
-    return material.subject or "Разное"
+    subject_ref = _loaded(material, "subject_ref")
+    if subject_ref is not None:
+        return subject_ref.name
+    return _loaded(material, "subject") or "Разное"
 
 
 def material_caption(material, with_author: bool = True) -> str:
