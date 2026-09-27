@@ -24,6 +24,8 @@ from app.db.queries import (
     get_or_create_contact_thread,
     get_transaction_for_user,
     get_user_transaction_for_material,
+    count_materials,
+    count_topics,
     get_subject,
     get_topic,
     get_user_by_id,
@@ -235,12 +237,14 @@ def browse_subject_keyboard(subjects) -> InlineKeyboardMarkup:
     )
 
 
-def browse_topic_keyboard(subject_id: int, topic_id: int):
+def nav_keyboard(subject_id: int, topic_id: int,
+                 parent_topic_id: int | None = None) -> InlineKeyboardMarkup:
     rows = []
     if topic_id:
+        target = parent_topic_id or 0
         rows.append([InlineKeyboardButton(
-            text="Открыть топик",
-            callback_data=f"browse_topic:{subject_id}:{topic_id}",
+            text="Назад в раздел",
+            callback_data=f"browse_topic:{subject_id}:{target}:0",
         )])
     rows.append([InlineKeyboardButton(
         text="К предметам",
@@ -249,18 +253,25 @@ def browse_topic_keyboard(subject_id: int, topic_id: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def browse_page_keyboard(callback_prefix: str, parts: str, offset: int,
-                         has_next: bool):
+def pagination_keyboard(prefix: str, subject_id: int, topic_id: int,
+                        topics_offset: int, materials_offset: int,
+                        offset: int, total: int) -> InlineKeyboardMarkup | None:
     buttons = []
     if offset > 0:
         buttons.append(InlineKeyboardButton(
             text="Назад",
-            callback_data=f"{callback_prefix}:{parts}:{offset - 10}",
+            callback_data=(
+                f"{prefix}:{subject_id}:{topic_id}:"
+                f"{topics_offset}:{materials_offset}:{max(0, offset - 10)}"
+            ),
         ))
-    if has_next:
+    if offset + 10 < total:
         buttons.append(InlineKeyboardButton(
             text="Дальше",
-            callback_data=f"{callback_prefix}:{parts}:{offset + 10}",
+            callback_data=(
+                f"{prefix}:{subject_id}:{topic_id}:"
+                f"{topics_offset}:{materials_offset}:{offset + 10}"
+            ),
         ))
     return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
@@ -279,64 +290,80 @@ async def show_subjects(message: Message, telegram_user_id: int | None = None):
     )
 
 
-async def show_topic_page(message: Message, subject_id: int, topic_id: int,
-                          telegram_user_id: int | None = None,
-                          offset: int = 0, show_topics: bool = True,
-                          show_materials: bool = True):
+async def show_catalog_page(message: Message, subject_id: int, topic_id: int = 0,
+                            telegram_user_id: int | None = None,
+                            topics_offset: int = 0,
+                            materials_offset: int = 0):
+    """Read-only catalog view: topics first, then free materials.
+
+    topic_id == 0 shows the subject root (top-level topics + untopiced
+    materials). Any other value opens that topic (child topics + its own
+    materials).
+    """
     user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
         user = await get_user_by_tg(session, str(user_id))
         subject = await get_subject(session, subject_id)
+        current_topic = await get_topic(session, topic_id) if topic_id else None
         topics = await list_topics(
             session,
             subject_id,
             parent_topic_id=topic_id or None,
             limit=11,
-            offset=offset,
-        ) if show_topics else []
-        current_topic = await get_topic(session, topic_id) if topic_id else None
+            offset=topics_offset,
+        )
+        topic_total = await count_topics(
+            session, subject_id, parent_topic_id=topic_id or None
+        )
         materials = await list_materials(
             session,
             user.university if user else "",
             subject_id=subject_id,
             topic_id=-1 if topic_id == 0 else topic_id,
             limit=11,
-            offset=offset,
-        ) if show_materials else []
+            offset=materials_offset,
+        )
+        material_total = await count_materials(
+            session,
+            user.university if user else "",
+            subject_id=subject_id,
+            topic_id=-1 if topic_id == 0 else topic_id,
+        )
     if not user or not subject:
-        await message.answer("Сначала заполни профиль через /start.")
+        await message.answer("Профиль не найден. Нажми /start.")
         return
-    topic_name = current_topic.name if current_topic else "Без топика"
-    await message.answer(
-        f"{subject.name}" if topic_id == 0
-        else f"{subject.name} → {topic_name}"
+
+    header = (
+        subject.name if topic_id == 0
+        else f"{subject.name} → {current_topic.name if current_topic else 'Топик'}"
     )
-    if show_topics:
-        if topics:
-            await message.answer("Топики:")
-            for topic in topics:
-                await message.answer(
-                    f"Топик: {topic.name}",
-                    reply_markup=browse_topic_keyboard(
-                        subject_id, topic.id
-                    ),
-                )
+    await message.answer(header)
+
+    if topics:
+        await message.answer("Топики:")
+        for topic in topics[:10]:
             await message.answer(
-                "Страницы топиков:",
-                reply_markup=browse_page_keyboard(
-                    "browse_subject_page", str(subject_id), offset,
-                    len(topics) > 10,
-                ),
+                f"Топик: {topic.name}\nМатериалов: {topic.material_count}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="Открыть топик",
+                        callback_data=f"browse_topic:{subject_id}:{topic.id}:0",
+                    ),
+                ]]),
             )
-        elif topic_id == 0:
-            await message.answer("В этом предмете пока нет топиков.")
-        await message.answer(
-            "Материалы без топика:" if topic_id == 0
-            else "Материалы в этом топике:"
-        ) if show_materials else None
-    if show_materials and not materials:
+        topic_pages = pagination_keyboard(
+            "browse_topics", subject_id, topic_id,
+            topics_offset, materials_offset, topics_offset, topic_total,
+        )
+        if topic_pages:
+            await message.answer("Страницы топиков:",
+                                 reply_markup=topic_pages)
+    elif topic_id == 0:
+        await message.answer("В этом предмете пока нет топиков.")
+
+    if not materials:
         await message.answer("Материалов в этом разделе пока нет.")
-    elif show_materials:
+    else:
         for material in materials[:10]:
             await message.answer(
                 f"{material.title}\n"
@@ -344,18 +371,22 @@ async def show_topic_page(message: Message, subject_id: int, topic_id: int,
                 f"Преподаватель: {material.professor}",
                 reply_markup=material_keyboard(material.id),
             )
-        await message.answer(
-            "Страницы материалов:",
-            reply_markup=browse_page_keyboard(
-                "browse_material_page",
-                f"{subject_id}:{topic_id}",
-                offset,
-                len(materials) > 10,
-            ),
+        material_pages = pagination_keyboard(
+            "browse_materials", subject_id, topic_id,
+            topics_offset, materials_offset, materials_offset,
+            material_total,
         )
+        if material_pages:
+            await message.answer("Страницы материалов:",
+                                 reply_markup=material_pages)
+
     await message.answer(
         "Действия:",
-        reply_markup=browse_topic_keyboard(subject_id, topic_id),
+        reply_markup=nav_keyboard(
+            subject_id,
+            topic_id,
+            current_topic.parent_topic_id if current_topic else None,
+        ),
     )
 
 
@@ -368,48 +399,54 @@ async def browse_subjects_callback(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("browse_subject:"))
 async def browse_subject_callback(callback: CallbackQuery):
     subject_id = int(callback.data.split(":", 1)[1])
-    await show_topic_page(callback.message, subject_id, 0,
-                          callback.from_user.id)
     await callback.answer()
+    await show_catalog_page(callback.message, subject_id, 0,
+                            callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith("browse_topic:"))
 async def browse_topic_callback(callback: CallbackQuery):
     parts = callback.data.split(":")
+    offset = int(parts[3]) if len(parts) > 3 else 0
     await callback.answer()
-    await show_topic_page(
+    await show_catalog_page(
         callback.message,
         int(parts[1]),
         int(parts[2]),
         callback.from_user.id,
+        materials_offset=offset,
     )
 
 
-@router.callback_query(F.data.startswith("browse_subject_page:"))
-async def browse_subject_page_callback(callback: CallbackQuery):
-    _, subject_id, offset = callback.data.split(":")
-    await callback.answer()
-    await show_topic_page(
-        callback.message,
-        int(subject_id),
-        0,
-        callback.from_user.id,
-        int(offset),
-        show_materials=False,
+@router.callback_query(F.data.startswith("browse_topics:"))
+async def browse_topics_page_callback(callback: CallbackQuery):
+    _, subject_id, topic_id, _, materials_offset, topics_offset = (
+        callback.data.split(":")
     )
-
-
-@router.callback_query(F.data.startswith("browse_material_page:"))
-async def browse_material_page_callback(callback: CallbackQuery):
-    _, subject_id, topic_id, offset = callback.data.split(":")
     await callback.answer()
-    await show_topic_page(
+    await show_catalog_page(
         callback.message,
         int(subject_id),
         int(topic_id),
         callback.from_user.id,
-        int(offset),
-        show_topics=False,
+        topics_offset=int(topics_offset),
+        materials_offset=int(materials_offset),
+    )
+
+
+@router.callback_query(F.data.startswith("browse_materials:"))
+async def browse_materials_page_callback(callback: CallbackQuery):
+    _, subject_id, topic_id, topics_offset, _, materials_offset = (
+        callback.data.split(":")
+    )
+    await callback.answer()
+    await show_catalog_page(
+        callback.message,
+        int(subject_id),
+        int(topic_id),
+        callback.from_user.id,
+        topics_offset=int(topics_offset),
+        materials_offset=int(materials_offset),
     )
 
 
@@ -763,11 +800,6 @@ async def create_topic_for_upload(message: Message, state: FSMContext):
             creator_id=creator.id,
             name=name,
         )
-    if data.get("topic_mode") == "browse":
-        await state.clear()
-        await message.answer(f"Топик «{topic.name}» создан.")
-        await show_topic_page(message, topic.subject_id, topic.id)
-        return
     await state.update_data(topic_id=topic.id)
     await state.set_state(UploadMaterial.waiting_title)
     await message.answer("Топик создан. Введи название материала:")
@@ -883,9 +915,10 @@ async def search_query(message: Message, state: FSMContext):
 
 
 async def send_catalog(message: Message, search_term: str | None = None,
-                       offset: int = 0):
+                       offset: int = 0, telegram_user_id: int | None = None):
+    user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(user_id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
@@ -929,6 +962,7 @@ async def catalog_page(callback: CallbackQuery):
         callback.message,
         search_term=search_term,
         offset=offset,
+        telegram_user_id=callback.from_user.id,
     )
 
 
@@ -1245,7 +1279,6 @@ async def material_detail_callback(callback: CallbackQuery):
         f"{material.title}\n"
         f"Предмет: {material.subject}\n"
         f"Преподаватель: {material.professor}\n"
-        f"Тип: {material.work_type}\n"
         f"Описание: {description}",
         reply_markup=material_detail_keyboard(material.id),
     )

@@ -129,15 +129,12 @@ async def list_topics(session: AsyncSession, subject_id: int,
                       limit: int = 10, offset: int = 0):
     result = await session.execute(
         select(Topic)
-        .outerjoin(Material, Material.topic_id == Topic.id)
         .where(
             Topic.subject_id == subject_id,
             Topic.parent_topic_id == parent_topic_id,
         )
-        .group_by(Topic.id)
         .order_by(
             Topic.material_count.desc(),
-            func.count(Material.id).desc(),
             Topic.name.asc(),
             Topic.id.asc(),
         )
@@ -145,6 +142,17 @@ async def list_topics(session: AsyncSession, subject_id: int,
         .offset(offset)
     )
     return result.scalars().all()
+
+
+async def count_topics(session: AsyncSession, subject_id: int,
+                       parent_topic_id: int | None = None) -> int:
+    result = await session.execute(
+        select(func.count(Topic.id)).where(
+            Topic.subject_id == subject_id,
+            Topic.parent_topic_id == parent_topic_id,
+        )
+    )
+    return result.scalar_one()
 
 
 async def get_topic(session: AsyncSession, topic_id: int):
@@ -171,11 +179,8 @@ async def get_subject(session: AsyncSession, subject_id: int):
     return result.scalars().first()
 
 
-async def list_materials(session: AsyncSession, university: str,
-                         search_term: str | None = None,
-                         subject_id: int | None = None,
-                         topic_id: int | None = None,
-                         limit: int = 10, offset: int = 0):
+def _material_filters(university: str, search_term: str | None,
+                      subject_id: int | None, topic_id: int | None):
     filters = [
         User.university == university,
         Material.status == "active",
@@ -193,6 +198,29 @@ async def list_materials(session: AsyncSession, university: str,
         filters.append(Material.topic_id.is_(None))
     elif topic_id is not None:
         filters.append(Material.topic_id == topic_id)
+    return filters
+
+
+async def count_materials(session: AsyncSession, university: str,
+                          search_term: str | None = None,
+                          subject_id: int | None = None,
+                          topic_id: int | None = None) -> int:
+    result = await session.execute(
+        select(func.count(Material.id))
+        .join(Material.seller)
+        .where(*_material_filters(
+            university, search_term, subject_id, topic_id,
+        ))
+    )
+    return result.scalar_one()
+
+
+async def list_materials(session: AsyncSession, university: str,
+                         search_term: str | None = None,
+                         subject_id: int | None = None,
+                         topic_id: int | None = None,
+                         limit: int = 10, offset: int = 0):
+    filters = _material_filters(university, search_term, subject_id, topic_id)
     thanks = (
         select(func.count(MaterialRating.id))
         .where(
