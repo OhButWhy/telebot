@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import cast, Float, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.db.models import (
@@ -12,6 +12,8 @@ from app.db.models import (
     Topic,
     Transaction,
     User,
+    MaterialFile,
+    MaterialRating,
 )
 
 
@@ -77,7 +79,25 @@ async def create_material(session: AsyncSession, seller_id: int,
     session.add(material)
     await session.commit()
     await session.refresh(material)
+    session.add(MaterialFile(
+        material_id=material.id,
+        telegram_file_id=file_id,
+    ))
+    await session.commit()
     return material
+
+
+async def add_material_file(session: AsyncSession, material_id: int,
+                            telegram_file_id: str,
+                            file_name: str | None = None):
+    material_file = MaterialFile(
+        material_id=material_id,
+        telegram_file_id=telegram_file_id,
+        file_name=file_name,
+    )
+    session.add(material_file)
+    await session.commit()
+    return material_file
 
 
 async def list_subjects(session: AsyncSession):
@@ -118,6 +138,8 @@ async def get_subject(session: AsyncSession, subject_id: int):
 
 async def list_materials(session: AsyncSession, university: str,
                          search_term: str | None = None,
+                         subject_id: int | None = None,
+                         topic_id: int | None = None,
                          limit: int = 10, offset: int = 0):
     filters = [
         User.university == university,
@@ -130,11 +152,33 @@ async def list_materials(session: AsyncSession, university: str,
             Material.subject.ilike(pattern),
             Material.professor.ilike(pattern),
         ))
+    if subject_id is not None:
+        filters.append(Material.subject_id == subject_id)
+    if topic_id is not None:
+        filters.append(Material.topic_id == topic_id)
+    thanks = (
+        select(func.count(MaterialRating.id))
+        .where(
+            MaterialRating.material_id == Material.id,
+            MaterialRating.value == "thanks",
+        )
+        .scalar_subquery()
+    )
+    not_ouch = (
+        select(func.count(MaterialRating.id))
+        .where(
+            MaterialRating.material_id == Material.id,
+            MaterialRating.value == "not_ouch",
+        )
+        .scalar_subquery()
+    )
+    rating_score = cast(thanks, Float) / (cast(not_ouch, Float) + 1.0)
     query = (
         select(Material)
         .join(Material.seller)
         .where(*filters)
         .order_by(
+            rating_score.desc(),
             Material.sort_order.desc(),
             Material.created_at.desc(),
             Material.id.desc(),
@@ -146,10 +190,35 @@ async def list_materials(session: AsyncSession, university: str,
     return result.scalars().all()
 
 
+async def save_material_rating(session: AsyncSession, material_id: int,
+                               user_id: int, value: str):
+    result = await session.execute(
+        select(MaterialRating).where(
+            MaterialRating.material_id == material_id,
+            MaterialRating.user_id == user_id,
+        )
+    )
+    rating = result.scalars().first()
+    if rating:
+        rating.value = value
+    else:
+        rating = MaterialRating(
+            material_id=material_id,
+            user_id=user_id,
+            value=value,
+        )
+        session.add(rating)
+    await session.commit()
+    return rating
+
+
 async def get_material(session: AsyncSession, material_id: int):
     result = await session.execute(
         select(Material)
-        .options(selectinload(Material.seller))
+        .options(
+            selectinload(Material.seller),
+            selectinload(Material.files),
+        )
         .where(Material.id == material_id)
     )
     return result.scalars().first()
@@ -186,6 +255,17 @@ async def get_or_create_transaction(session: AsyncSession, material_id: int,
     await session.commit()
     await session.refresh(transaction)
     return transaction
+
+
+async def get_user_transaction_for_material(session: AsyncSession,
+                                            material_id: int, user_id: int):
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.material_id == material_id,
+            Transaction.buyer_id == user_id,
+        )
+    )
+    return result.scalars().first()
 
 
 async def list_user_transactions(session: AsyncSession, buyer_id: int):

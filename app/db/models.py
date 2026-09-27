@@ -59,6 +59,11 @@ class Material(Base):
     subject_ref = relationship("Subject", back_populates="materials")
     topic = relationship("Topic", back_populates="materials")
     transactions = relationship("Transaction", back_populates="material")
+    files = relationship(
+        "MaterialFile",
+        back_populates="material",
+        cascade="all, delete-orphan",
+    )
 
     # Полнотекстовый индекс будет добавлен через миграцию (tsvector)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -79,6 +84,23 @@ class Subject(Base):
     children = relationship("Subject", back_populates="parent")
     materials = relationship("Material", back_populates="subject_ref")
     topics = relationship("Topic", back_populates="subject")
+
+
+class MaterialFile(Base):
+    __tablename__ = "material_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    material_id = Column(
+        Integer,
+        ForeignKey("materials.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    telegram_file_id = Column(String, nullable=False)
+    file_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    material = relationship("Material", back_populates="files")
 
 
 class Topic(Base):
@@ -128,6 +150,7 @@ class ContactThread(Base):
         nullable=False,
     )
     created_at = Column(DateTime, default=datetime.utcnow)
+    material = relationship("Material")
 
 
 class Report(Base):
@@ -146,6 +169,30 @@ class Report(Base):
     )
     comment = Column(Text, nullable=False)
     status = Column(String, default="new", nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MaterialRating(Base):
+    __tablename__ = "material_ratings"
+    __table_args__ = (
+        UniqueConstraint(
+            "material_id", "user_id",
+            name="uq_material_ratings_material_user",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    material_id = Column(
+        Integer,
+        ForeignKey("materials.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    value = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

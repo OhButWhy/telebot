@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class UploadMaterial(StatesGroup):
     waiting_document = State()
+    waiting_documents = State()
     waiting_title = State()
     waiting_subject = State()
     waiting_topic = State()

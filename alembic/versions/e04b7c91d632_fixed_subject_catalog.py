@@ -31,6 +31,15 @@ def upgrade() -> None:
     )
     op.execute(
         subjects.update()
+        .where(subjects.c.id.in_([1, 2, 3]))
+        .values(name=sa.case(
+            (subjects.c.id == 1, "__subject_math"),
+            (subjects.c.id == 2, "__subject_computer"),
+            else_="__subject_physics",
+        ))
+    )
+    op.execute(
+        subjects.update()
         .where(subjects.c.id == 1)
         .values(name="Математика", parent_id=None)
     )

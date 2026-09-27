@@ -11,6 +11,7 @@ from aiogram.types import (
 from app.db.session import async_session_maker
 from app.db.queries import (
     create_material,
+    add_material_file,
     create_user,
     create_topic,
     create_chat_message,
@@ -22,6 +23,7 @@ from app.db.queries import (
     get_or_create_transaction,
     get_or_create_contact_thread,
     get_transaction_for_user,
+    get_user_transaction_for_material,
     get_subject,
     get_user_by_id,
     get_user_by_tg,
@@ -33,10 +35,11 @@ from app.db.queries import (
     list_materials,
     list_subjects,
     list_topics,
+    save_material_rating,
     update_user_profile,
     update_material,
 )
-from app.bot.keyboards import MAIN_MENU
+from app.bot.keyboards import EDIT_FILE_MENU, MAIN_MENU, UPLOAD_FILES_MENU
 from app.bot.states import (
     ChatState,
     EditMaterialState,
@@ -57,7 +60,7 @@ async def show_main_menu(message: Message):
 
 @router.message(F.text == "Каталог")
 async def menu_catalog(message: Message):
-    await cmd_catalog(message)
+    await show_subjects(message)
 
 
 @router.message(F.text == "Поиск")
@@ -91,6 +94,11 @@ async def menu_chats(message: Message):
     await cmd_my_chats(message)
 
 
+@router.message(F.text == "Настройки")
+async def menu_settings(message: Message):
+    await cmd_delete_account(message)
+
+
 def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -122,6 +130,19 @@ def chat_keyboard(transaction_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text="Написать продавцу",
             callback_data=f"chat:{transaction_id}",
+        ),
+    ]])
+
+
+def rating_keyboard(material_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Спасибо",
+            callback_data=f"rating:thanks:{material_id}",
+        ),
+        InlineKeyboardButton(
+            text="Неоч",
+            callback_data=f"rating:not_ouch:{material_id}",
         ),
     ]])
 
@@ -200,6 +221,165 @@ def subject_keyboard(subjects) -> InlineKeyboardMarkup:
         inline_keyboard=[buttons[index:index + 2]
                          for index in range(0, len(buttons), 2)]
     )
+
+
+def browse_subject_keyboard(subjects) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(
+        text=subject.name,
+        callback_data=f"browse_subject:{subject.id}",
+    ) for subject in subjects]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[buttons[index:index + 2]
+                         for index in range(0, len(buttons), 2)]
+    )
+
+
+def browse_topic_keyboard(subject_id: int, topic_id: int):
+    rows = []
+    if topic_id:
+        rows.append([InlineKeyboardButton(
+            text="Открыть топик",
+            callback_data=f"browse_topic:{subject_id}:{topic_id}",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text="Все материалы предмета",
+            callback_data=f"browse_topic:{subject_id}:0",
+        )])
+    rows.extend([
+        [InlineKeyboardButton(
+            text="Добавить материал",
+            callback_data=f"add_material:{subject_id}:{topic_id}",
+        )],
+        [InlineKeyboardButton(
+            text="Добавить топик",
+            callback_data=f"browse_topic_new:{subject_id}",
+        )],
+        [InlineKeyboardButton(
+            text="К предметам",
+            callback_data="browse_subjects",
+        )],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_subjects(message: Message):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        subjects = await list_subjects(session)
+    if not user:
+        await message.answer("Сначала нажми /start, для регистрации!")
+        return
+    await message.answer(
+        "Выбери предмет:",
+        reply_markup=browse_subject_keyboard(subjects),
+    )
+
+
+async def show_topic_page(message: Message, subject_id: int, topic_id: int):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        subject = await get_subject(session, subject_id)
+        topics = await list_topics(session, subject_id)
+        materials = await list_materials(
+            session,
+            user.university if user else "",
+            subject_id=subject_id,
+            topic_id=topic_id if topic_id else None,
+            limit=11,
+        )
+    if not user or not subject:
+        await message.answer("Сначала заполни профиль через /start.")
+        return
+    topic_name = "Без топика"
+    if topic_id:
+        topic_name = next(
+            (topic.name for topic in topics if topic.id == topic_id),
+            "Топик",
+        )
+    await message.answer(f"{subject.name} → {topic_name}")
+    if not materials:
+        await message.answer("Материалов пока нет. Добавь первый материал.")
+    else:
+        for material in materials[:10]:
+            await message.answer(
+                f"{material.title}\n"
+                f"Предмет: {material.subject}\n"
+                f"Преподаватель: {material.professor}",
+                reply_markup=material_keyboard(material.id),
+            )
+    await message.answer(
+        "Действия:",
+        reply_markup=browse_topic_keyboard(subject_id, topic_id),
+    )
+
+
+@router.callback_query(F.data == "browse_subjects")
+async def browse_subjects_callback(callback: CallbackQuery):
+    await callback.answer()
+    await show_subjects(callback.message)
+
+
+@router.callback_query(F.data.startswith("browse_subject:"))
+async def browse_subject_callback(callback: CallbackQuery):
+    subject_id = int(callback.data.split(":", 1)[1])
+    async with async_session_maker() as session:
+        topics = await list_topics(session, subject_id)
+        subject = await get_subject(session, subject_id)
+    if not subject:
+        await callback.answer("Предмет недоступен.", show_alert=True)
+        return
+    if not topics:
+        await callback.message.answer(
+            f"{subject.name}: топиков пока нет. "
+            "Создай первый или добавь материал."
+        )
+    else:
+        for topic in topics:
+            await callback.message.answer(
+                f"Топик: {topic.name}",
+                reply_markup=browse_topic_keyboard(subject_id, topic.id),
+            )
+    await callback.message.answer(
+        "Можно добавить материал без топика:",
+        reply_markup=browse_topic_keyboard(subject_id, 0),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("browse_topic:"))
+async def browse_topic_callback(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    await callback.answer()
+    await show_topic_page(callback.message, int(parts[1]), int(parts[2]))
+
+
+@router.callback_query(F.data.startswith("browse_topic_new:"))
+async def add_topic_from_navigation(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    subject_id = int(callback.data.split(":", 2)[2])
+    await state.clear()
+    await state.update_data(
+        topic_subject_id=subject_id,
+        topic_mode="browse",
+    )
+    await state.set_state(TopicState.waiting_name)
+    await callback.message.answer("Введи название нового топика:")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("add_material:"))
+async def add_material_from_topic(callback: CallbackQuery, state: FSMContext):
+    _, subject_id, topic_id = callback.data.split(":")
+    await start_upload(
+        callback.message,
+        state,
+        subject_id=int(subject_id),
+        topic_id=int(topic_id) or None,
+    )
+    await callback.answer()
 
 
 def topic_keyboard(topics, subject_id: int) -> InlineKeyboardMarkup:
@@ -330,10 +510,14 @@ async def profile_course(message: Message, state: FSMContext):
 
 
 @router.message(Command("upload"))
-async def start_upload(message: Message, state: FSMContext):
+async def start_upload(message: Message, state: FSMContext,
+                       subject_id: int | None = None,
+                       topic_id: int | None = None):
     if not await get_user_for_message(message):
         await message.answer("Сначала нажми /start, для регистрации!")
         return
+    await state.clear()
+    await state.update_data(subject_id=subject_id, topic_id=topic_id)
     await state.set_state(UploadMaterial.waiting_document)
     await message.answer(
         "Пришли документ PDF, DOC, DOCX, JPG, PNG или ZIP размером до 50 МБ."
@@ -344,6 +528,12 @@ async def start_upload(message: Message, state: FSMContext):
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Текущее действие отменено.")
+
+
+@router.message(F.text == "Отмена")
+async def cancel_button(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Текущее действие отменено.", reply_markup=MAIN_MENU)
 
 
 @router.message(Command("skip"))
@@ -367,6 +557,11 @@ async def skip_edit_file(message: Message, state: FSMContext):
         "Материал сохранён без замены файла."
         if updated else "Материал не найден."
     )
+
+
+@router.message(EditMaterialState.waiting_file, F.text == "Пропустить")
+async def skip_edit_file_button(message: Message, state: FSMContext):
+    await skip_edit_file(message, state)
 
 
 async def get_user_for_message(message: Message):
@@ -393,15 +588,78 @@ async def upload_document(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(file_id=message.document.file_id)
+    await state.update_data(file_ids=[message.document.file_id])
+    data = await state.get_data()
+    if data.get("subject_id"):
+        async with async_session_maker() as session:
+            subject = await get_subject(session, data["subject_id"])
+        if subject:
+            await state.update_data(subject=subject.name)
+            await state.set_state(UploadMaterial.waiting_documents)
+            await message.answer(
+                "Файл принят. Можешь отправить ещё файлы или нажми «Готово».",
+                reply_markup=UPLOAD_FILES_MENU,
+            )
+            return
+    await state.set_state(UploadMaterial.waiting_documents)
+    await message.answer(
+        "Файл принят. Можешь отправить ещё файлы или нажми «Готово».",
+        reply_markup=UPLOAD_FILES_MENU,
+    )
+
+
+@router.message(UploadMaterial.waiting_documents, F.document)
+async def upload_additional_document(message: Message, state: FSMContext):
+    allowed_extensions = {"pdf", "doc", "docx", "jpg", "png", "zip"}
+    file_name = message.document.file_name or ""
+    extension = (
+        file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    )
+    if extension not in allowed_extensions:
+        await message.answer("Этот формат файла не поддерживается.")
+        return
+    if (
+        message.document.file_size
+        and message.document.file_size > 50 * 1024 * 1024
+    ):
+        await message.answer(
+            "Файл слишком большой. Максимальный размер: 50 МБ."
+        )
+        return
+    data = await state.get_data()
+    file_ids = data.get("file_ids", [])
+    file_ids.append(message.document.file_id)
+    await state.update_data(file_ids=file_ids)
+    await message.answer(
+        f"Файл принят. Всего файлов: {len(file_ids)}. "
+        "Отправь ещё или нажми «Готово».",
+        reply_markup=UPLOAD_FILES_MENU,
+    )
+
+
+async def prompt_subject_selection(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         subjects = await list_subjects(session)
-    await state.update_data(subjects_loaded=True)
     await state.set_state(UploadMaterial.waiting_subject)
     await message.answer(
         "Выбери предмет или направление:",
         reply_markup=subject_keyboard(subjects),
     )
+
+
+@router.message(UploadMaterial.waiting_documents, F.text == "Готово")
+async def finish_document_upload(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("subject_id"):
+        await state.set_state(UploadMaterial.waiting_title)
+        await message.answer("Введи название материала:")
+        return
+    await prompt_subject_selection(message, state)
+
+
+@router.message(UploadMaterial.waiting_documents, Command("done"))
+async def finish_document_upload_command(message: Message, state: FSMContext):
+    await finish_document_upload(message, state)
 
 
 @router.message(UploadMaterial.waiting_document)
@@ -474,6 +732,11 @@ async def create_topic_for_upload(message: Message, state: FSMContext):
             creator_id=creator.id,
             name=name,
         )
+    if data.get("topic_mode") == "browse":
+        await state.clear()
+        await message.answer(f"Топик «{topic.name}» создан.")
+        await show_topic_page(message, topic.subject_id, topic.id)
+        return
     await state.update_data(topic_id=topic.id)
     await state.set_state(UploadMaterial.waiting_title)
     await message.answer("Топик создан. Введи название материала:")
@@ -554,7 +817,7 @@ async def upload_description(message: Message, state: FSMContext):
             seller_id=seller.id,
             title=data["title"],
             price=0,
-            file_id=data["file_id"],
+            file_id=data["file_ids"][0],
             subject_id=data.get("subject_id"),
             topic_id=data.get("topic_id"),
             subject=data["subject"],
@@ -562,6 +825,8 @@ async def upload_description(message: Message, state: FSMContext):
             work_type=data["work_type"],
             description=description,
         )
+        for file_id in data["file_ids"][1:]:
+            await add_material_file(session, material.id, file_id)
     await state.clear()
     await message.answer(f"Материал «{material.title}» добавлен в каталог.")
 
@@ -733,11 +998,41 @@ async def get_material_callback(callback: CallbackQuery):
         chat_id=callback.from_user.id,
         document=material.telegram_file_id,
     )
+    for material_file in material.files[1:]:
+        await callback.message.bot.send_document(
+            chat_id=callback.from_user.id,
+            document=material_file.telegram_file_id,
+        )
     await callback.message.answer(
         "Можешь написать продавцу по этому материалу:",
         reply_markup=chat_keyboard(transaction.id),
     )
+    await callback.message.answer(
+        "Оцени материал:",
+        reply_markup=rating_keyboard(material.id),
+    )
     await callback.answer("Материал отправлен")
+
+
+@router.callback_query(F.data.startswith("rating:"))
+async def rate_material(callback: CallbackQuery):
+    _, value, material_id_text = callback.data.split(":")
+    material_id = int(material_id_text)
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(callback.from_user.id))
+        transaction = await get_user_transaction_for_material(
+            session,
+            material_id,
+            user.id if user else -1,
+        )
+        if not transaction:
+            await callback.answer(
+                "Оценить можно только полученный материал.",
+                show_alert=True,
+            )
+            return
+        await save_material_rating(session, material_id, user.id, value)
+    await callback.answer("Оценка сохранена")
 
 
 @router.callback_query(F.data.startswith("contact:"))
@@ -866,7 +1161,8 @@ async def edit_material_order(message: Message, state: FSMContext):
     await state.update_data(sort_order=sort_order)
     await state.set_state(EditMaterialState.waiting_file)
     await message.answer(
-        "Пришли новый файл для замены текущего или нажми /skip."
+        "Пришли дополнительный файл или нажми «Пропустить».",
+        reply_markup=EDIT_FILE_MENU,
     )
 
 
@@ -897,8 +1193,14 @@ async def edit_material_file(message: Message, state: FSMContext):
             title=data["title"],
             description=data["description"],
             sort_order=data["sort_order"],
-            telegram_file_id=message.document.file_id,
         )
+        if updated:
+            await add_material_file(
+                session,
+                data["edit_material_id"],
+                message.document.file_id,
+                file_name,
+            )
     await state.clear()
     await message.answer(
         "Материал обновлён." if updated else "Материал не найден."
