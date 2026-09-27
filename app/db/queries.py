@@ -3,7 +3,16 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from app.db.models import ChatMessage, Material, Subject, Transaction, User
+from app.db.models import (
+    ChatMessage,
+    ContactThread,
+    Material,
+    Report,
+    Subject,
+    Topic,
+    Transaction,
+    User,
+)
 
 
 async def get_user_by_tg(session: AsyncSession, tg_id: str):
@@ -45,6 +54,8 @@ async def update_user_profile(session: AsyncSession, user: User,
 async def create_material(session: AsyncSession, seller_id: int,
                           title: str, price: float, file_id: str,
                           subject_id: int | None = None,
+                          topic_id: int | None = None,
+                          sort_order: int = 0,
                           subject: str = "Разное",
                           professor: str = "Не указан",
                           work_type: str = "Документ",
@@ -52,6 +63,8 @@ async def create_material(session: AsyncSession, seller_id: int,
     material = Material(
         seller_id=seller_id,
         subject_id=subject_id,
+        topic_id=topic_id,
+        sort_order=sort_order,
         title=title,
         subject=subject,
         professor=professor,
@@ -70,6 +83,28 @@ async def create_material(session: AsyncSession, seller_id: int,
 async def list_subjects(session: AsyncSession):
     result = await session.execute(
         select(Subject).order_by(Subject.parent_id.asc(), Subject.name.asc())
+    )
+    return result.scalars().all()
+
+
+async def create_topic(session: AsyncSession, subject_id: int,
+                       creator_id: int, name: str):
+    topic = Topic(
+        subject_id=subject_id,
+        creator_id=creator_id,
+        name=name,
+    )
+    session.add(topic)
+    await session.commit()
+    await session.refresh(topic)
+    return topic
+
+
+async def list_topics(session: AsyncSession, subject_id: int):
+    result = await session.execute(
+        select(Topic)
+        .where(Topic.subject_id == subject_id)
+        .order_by(Topic.name.asc(), Topic.id.asc())
     )
     return result.scalars().all()
 
@@ -99,7 +134,11 @@ async def list_materials(session: AsyncSession, university: str,
         select(Material)
         .join(Material.seller)
         .where(*filters)
-        .order_by(Material.created_at.desc(), Material.id.desc())
+        .order_by(
+            Material.sort_order.desc(),
+            Material.created_at.desc(),
+            Material.id.desc(),
+        )
         .limit(limit)
         .offset(offset)
     )
@@ -190,10 +229,16 @@ async def get_transaction_for_user(session: AsyncSession,
     return result.scalars().first()
 
 
-async def create_chat_message(session: AsyncSession, transaction_id: int,
-                              sender_id: int, text: str):
+async def create_chat_message(
+    session: AsyncSession,
+    transaction_id: int | None,
+    sender_id: int,
+    text: str,
+    contact_thread_id: int | None = None,
+):
     chat_message = ChatMessage(
         transaction_id=transaction_id,
+        contact_thread_id=contact_thread_id,
         sender_id=sender_id,
         text=text,
     )
@@ -244,3 +289,73 @@ async def delete_material(session: AsyncSession, material_id: int,
     )
     await session.commit()
     return result.rowcount > 0
+
+
+async def update_material(session: AsyncSession, material_id: int,
+                          seller_id: int, **values):
+    result = await session.execute(
+        update(Material)
+        .where(Material.id == material_id, Material.seller_id == seller_id)
+        .values(**values)
+    )
+    await session.commit()
+    return result.rowcount > 0
+
+
+async def get_or_create_contact_thread(session: AsyncSession, material_id: int,
+                                       buyer_id: int, seller_id: int):
+    result = await session.execute(
+        select(ContactThread).where(
+            ContactThread.material_id == material_id,
+            ContactThread.buyer_id == buyer_id,
+            ContactThread.seller_id == seller_id,
+        )
+    )
+    thread = result.scalars().first()
+    if thread:
+        return thread
+    thread = ContactThread(
+        material_id=material_id,
+        buyer_id=buyer_id,
+        seller_id=seller_id,
+    )
+    session.add(thread)
+    await session.commit()
+    await session.refresh(thread)
+    return thread
+
+
+async def create_report(session: AsyncSession, material_id: int,
+                        reporter_id: int, comment: str):
+    report = Report(
+        material_id=material_id,
+        reporter_id=reporter_id,
+        comment=comment,
+    )
+    session.add(report)
+    await session.commit()
+    await session.refresh(report)
+    return report
+
+
+async def get_contact_thread_for_user(session: AsyncSession, thread_id: int,
+                                      user_id: int):
+    result = await session.execute(
+        select(ContactThread)
+        .options(selectinload(ContactThread.material))
+        .where(
+            ContactThread.id == thread_id,
+            (ContactThread.buyer_id == user_id)
+            | (ContactThread.seller_id == user_id),
+        )
+    )
+    return result.scalars().first()
+
+
+async def list_contact_messages(session: AsyncSession, thread_id: int):
+    result = await session.execute(
+        select(ChatMessage)
+        .where(ChatMessage.contact_thread_id == thread_id)
+        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+    )
+    return result.scalars().all()

@@ -5,6 +5,7 @@ class UploadMaterial(StatesGroup):
     waiting_document = State()
     waiting_title = State()
     waiting_subject = State()
+    waiting_topic = State()
     waiting_custom_subject = State()
     waiting_professor = State()
     waiting_work_type = State()
@@ -23,3 +24,18 @@ class ChatState(StatesGroup):
 
 class SearchState(StatesGroup):
     waiting_query = State()
+
+
+class TopicState(StatesGroup):
+    waiting_name = State()
+
+
+class ReportState(StatesGroup):
+    waiting_comment = State()
+
+
+class EditMaterialState(StatesGroup):
+    waiting_title = State()
+    waiting_description = State()
+    waiting_order = State()
+    waiting_file = State()
