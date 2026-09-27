@@ -309,6 +309,10 @@ async def list_user_materials(session: AsyncSession, seller_id: int,
                               offset: int = 0):
     query = (
         select(Material)
+        .options(
+            selectinload(Material.seller),
+            selectinload(Material.subject_ref),
+        )
         .where(Material.seller_id == seller_id)
         .order_by(Material.created_at.desc(), Material.id.desc())
     )
@@ -365,7 +369,11 @@ async def list_user_transactions(session: AsyncSession, buyer_id: int,
                                  offset: int = 0):
     query = (
         select(Transaction)
-        .options(selectinload(Transaction.material))
+        .options(
+            selectinload(Transaction.material).selectinload(
+                Material.subject_ref
+            ),
+        )
         .where(Transaction.buyer_id == buyer_id)
         .order_by(Transaction.created_at.desc(), Transaction.id.desc())
     )
@@ -391,7 +399,9 @@ async def list_seller_sales(session: AsyncSession, seller_id: int,
         select(Transaction)
         .join(Transaction.material)
         .options(
-            selectinload(Transaction.material),
+            selectinload(Transaction.material).selectinload(
+                Material.subject_ref
+            ),
             selectinload(Transaction.buyer),
         )
         .where(Material.seller_id == seller_id)
@@ -433,6 +443,9 @@ async def list_user_chats(session: AsyncSession, user_id: int,
         .join(latest, latest.c.thread_id == ContactThread.id)
         .options(
             selectinload(ContactThread.material).selectinload(Material.seller),
+            selectinload(ContactThread.material).selectinload(
+                Material.subject_ref
+            ),
             selectinload(ContactThread.messages),
         )
         .order_by(latest.c.last_id.desc())
