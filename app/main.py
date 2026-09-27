@@ -8,7 +8,7 @@ from aiogram.types import Update
 from sqlalchemy import text
 
 from app.config import settings
-from app.bot.handlers import router as bot_router
+from app.bot.routers import router as bot_router
 from app.db.session import async_session_maker, engine
 
 # Настройка логгера
