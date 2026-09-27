@@ -31,7 +31,6 @@ SET material_count = COALESCE((
     FROM topic_tree
     JOIN materials
       ON materials.topic_id = topic_tree.descendant_id
-     AND materials.status = 'active'
     WHERE topic_tree.ancestor_id = topics.id
 ), 0);
 """

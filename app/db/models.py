@@ -49,11 +49,9 @@ class Material(Base):
     title = Column(String, nullable=False)
     subject = Column(String, nullable=False)          # Предмет
     professor = Column(String, nullable=False)        # Преподаватель
-    work_type = Column(String, nullable=False)        # конспект/лаба/курсовая
     price = Column(Float, nullable=False)             # Цена в рублях
     description = Column(Text, nullable=True)
     telegram_file_id = Column(String, nullable=False)
-    status = Column(String, default="active", nullable=False)  # active/deleted
 
     seller = relationship("User", back_populates="materials")
     subject_ref = relationship("Subject", back_populates="materials")
