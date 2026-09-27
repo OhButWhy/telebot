@@ -11,7 +11,7 @@ from aiogram.types import (
 )
 
 from app.bot.common import PAGE_SIZE
-from app.bot.keyboards import catalog_keyboard
+from app.bot.keyboards import author_name, catalog_keyboard
 from app.bot.states import SearchState
 from app.db.queries import count_materials, get_user_by_tg, list_materials
 from app.db.session import async_session_maker
@@ -82,7 +82,7 @@ async def send_catalog(message: Message, search_term: str | None = None,
     lines = [f"🔍 Найдено: {total}", ""]
     rows: list[list] = []
     for index, material in enumerate(materials[:PAGE_SIZE], start=1):
-        author = material.seller.username if material.seller else "—"
+        author = author_name(material)
         lines.append(
             f"{index + offset}. {material.title} — {material.price:.0f} ₽ "
             f"(by {author})"

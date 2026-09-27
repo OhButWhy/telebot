@@ -18,9 +18,13 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ],
         [
             KeyboardButton(text="Мои получения"),
+            KeyboardButton(text="Мои продажи"),
+        ],
+        [
+            KeyboardButton(text="Чаты"),
             KeyboardButton(text="Профиль"),
         ],
-        [KeyboardButton(text="Чаты"), KeyboardButton(text="Удалить аккаунт")],
+        [KeyboardButton(text="Удалить аккаунт")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Выбери действие",
@@ -47,6 +51,17 @@ EDIT_FILE_MENU = ReplyKeyboardMarkup(
 )
 
 
+def author_name(material) -> str:
+    seller = material.seller
+    if seller is None:
+        return "неизвестный автор"
+    if seller.username:
+        return seller.username
+    if seller.tg_id and not seller.tg_id.startswith("deleted_"):
+        return f"автор №{seller.tg_id}"
+    return "удалённый автор"
+
+
 def material_caption(material, with_author: bool = True) -> str:
     lines = [
         material.title,
@@ -54,8 +69,7 @@ def material_caption(material, with_author: bool = True) -> str:
         f"Преподаватель: {material.professor}",
     ]
     if with_author:
-        author = material.seller.username if material.seller else None
-        lines.append(f"by {author or 'неизвестный автор'}")
+        lines.append(f"by {author_name(material)}")
     return "\n".join(lines)
 
 def topic_keyboard(topics, subject_id: int) -> InlineKeyboardMarkup:

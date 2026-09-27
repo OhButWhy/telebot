@@ -13,6 +13,7 @@ from app.bot.keyboards import (
 )
 from app.bot.states import ChatState
 from app.db.queries import (
+    count_seller_sales,
     count_user_chats,
     count_user_materials,
     count_user_transactions,
@@ -23,6 +24,7 @@ from app.db.queries import (
     get_user_by_id,
     get_user_by_tg,
     list_contact_messages,
+    list_seller_sales,
     list_user_chats,
     list_user_materials,
     list_user_transactions,
@@ -177,6 +179,63 @@ async def my_chats_page(callback: CallbackQuery):
     offset = int(callback.data.split(":", 1)[1])
     await callback.answer()
     await render_my_chats(callback.message, callback.from_user.id, offset)
+
+
+async def render_my_sales(message: Message, telegram_user_id: int,
+                          offset: int = 0):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(telegram_user_id))
+        if not user:
+            await message.answer("Сначала нажми /start, для регистрации!")
+            return
+        sales = await list_seller_sales(
+            session, user.id, limit=MY_PAGE_SIZE, offset=offset
+        )
+        total = await count_seller_sales(session, user.id)
+        threads = []
+        for sale in sales:
+            material = sale.material
+            if not material:
+                continue
+            thread = await get_or_create_contact_thread(
+                session, material.id, sale.buyer_id, user.id
+            )
+            buyer_name = (
+                sale.buyer.username if sale.buyer and sale.buyer.username
+                else "покупатель"
+            )
+            threads.append((material, buyer_name, thread))
+
+    if not threads or total == 0:
+        await message.answer("У тебя пока нет продаж.")
+        return
+    lines = [f"📈 Получений: {total}", ""]
+    for material, buyer_name, thread in threads:
+        lines.append(f"📄 {material.title} — {buyer_name}")
+    await message.answer("\n".join(lines))
+    for material, buyer_name, thread in threads:
+        await message.answer(
+            f"💬 Чат по «{material.title}» ({buyer_name})",
+            reply_markup=chat_keyboard(thread.id, "💬 Написать покупателю"),
+        )
+    nav = list_nav_keyboard("my_sales", offset, total, MY_PAGE_SIZE)
+    if nav:
+        await message.answer(
+            f"Продажи: {offset + 1}–{offset + len(threads)} из {total}",
+            reply_markup=nav,
+        )
+
+
+@router.message(Command("my_sales"))
+async def cmd_my_sales(message: Message):
+    await render_my_sales(message, message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("my_sales:"))
+async def my_sales_page(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await callback.answer()
+    await render_my_sales(callback.message, callback.from_user.id, offset)
 
 
 @router.callback_query(F.data.startswith("chat:"))

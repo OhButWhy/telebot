@@ -10,7 +10,11 @@ from aiogram.types import (
 )
 
 from app.bot.common import PAGE_SIZE, _page_row, materials_word, nav_keyboard
-from app.bot.keyboards import browse_subject_keyboard, topic_keyboard
+from app.bot.keyboards import (
+    author_name,
+    browse_subject_keyboard,
+    topic_keyboard,
+)
 from app.db.queries import (
     count_materials,
     count_topics,
@@ -118,11 +122,10 @@ async def show_catalog_page(message: Message, subject_id: int, topic_id: int = 0
         for index, material in enumerate(materials[:PAGE_SIZE], start=1):
             lines.append(
                 f"{index + materials_offset}. {material.title} "
-                f"(by {material.seller.username if material.seller else '—'})"
+                f"(by {author_name(material)})"
             )
             rows.append([InlineKeyboardButton(
-                text=f"📄 {material.title} — by "
-                     f"{material.seller.username if material.seller else '—'}",
+                text=f"📄 {material.title} — by {author_name(material)}",
                 callback_data=f"material:{material.id}",
             )])
         material_row = _page_row(

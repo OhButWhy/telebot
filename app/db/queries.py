@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import cast, delete, Float, func, or_, select, update
+from sqlalchemy import case, cast, delete, Float, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.db.models import (
@@ -74,15 +74,15 @@ async def create_material(session: AsyncSession, seller_id: int,
         telegram_file_id=file_id,
     )
     session.add(material)
-    await session.commit()
-    await session.refresh(material)
+    await session.flush()
     session.add(MaterialFile(
         material_id=material.id,
         telegram_file_id=file_id,
     ))
-    await session.commit()
     if topic_id:
         await change_topic_material_counts(session, topic_id, 1)
+    await session.commit()
+    await session.refresh(material)
     return material
 
 
@@ -159,14 +159,28 @@ async def get_topic(session: AsyncSession, topic_id: int):
 
 async def change_topic_material_counts(session: AsyncSession, topic_id: int,
                                        delta: int):
+    """Bump a topic and all its ancestors, without committing.
+
+    Callers keep this inside the same transaction as the material change so
+    the counters can never drift from the actual rows.
+    """
     current_id = topic_id
-    while current_id:
-        topic = await session.get(Topic, current_id)
-        if not topic:
+    seen = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        result = await session.execute(
+            update(Topic)
+            .where(Topic.id == current_id)
+            .values(material_count=case(
+                (Topic.material_count + delta < 0, 0),
+                else_=Topic.material_count + delta,
+            ))
+            .returning(Topic.parent_topic_id)
+        )
+        row = result.first()
+        if row is None:
             break
-        topic.material_count = max(0, topic.material_count + delta)
-        current_id = topic.parent_topic_id
-    await session.commit()
+        current_id = row[0]
 
 
 async def get_subject(session: AsyncSession, subject_id: int):
@@ -366,6 +380,34 @@ async def count_user_transactions(session: AsyncSession, buyer_id: int) -> int:
     return result.scalar_one()
 
 
+async def list_seller_sales(session: AsyncSession, seller_id: int,
+                            limit: int | None = None, offset: int = 0):
+    """Transactions for the seller's materials, newest first."""
+    query = (
+        select(Transaction)
+        .join(Transaction.material)
+        .options(
+            selectinload(Transaction.material),
+            selectinload(Transaction.buyer),
+        )
+        .where(Material.seller_id == seller_id)
+        .order_by(Transaction.created_at.desc(), Transaction.id.desc())
+    )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def count_seller_sales(session: AsyncSession, seller_id: int) -> int:
+    result = await session.execute(
+        select(func.count(Transaction.id))
+        .join(Transaction.material)
+        .where(Material.seller_id == seller_id)
+    )
+    return result.scalar_one()
+
+
 async def list_user_chats(session: AsyncSession, user_id: int,
                           limit: int | None = None, offset: int = 0):
     """Every conversation the user takes part in, most recent first."""
@@ -486,9 +528,9 @@ async def _delete_materials_by_seller(session: AsyncSession, seller_id: int):
     result = await session.execute(
         delete(Material).where(Material.seller_id == seller_id)
     )
-    await session.commit()
     for topic_id, amount in per_topic.items():
         await change_topic_material_counts(session, topic_id, -amount)
+    await session.commit()
     return result.rowcount
 
 
@@ -503,9 +545,9 @@ async def delete_material(session: AsyncSession, material_id: int,
             Material.seller_id == seller_id,
         )
     )
-    await session.commit()
     if result.rowcount and material.topic_id:
         await change_topic_material_counts(session, material.topic_id, -1)
+    await session.commit()
     return result.rowcount > 0
 
 

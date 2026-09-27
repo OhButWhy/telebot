@@ -11,7 +11,12 @@ from aiogram.types import Message
 
 from app.bot.account import cmd_delete_account
 from app.bot.catalog import show_subjects
-from app.bot.mylists import cmd_my_chats, cmd_my_materials, cmd_my_purchases
+from app.bot.mylists import (
+    cmd_my_chats,
+    cmd_my_materials,
+    cmd_my_purchases,
+    cmd_my_sales,
+)
 from app.bot.profile import edit_profile
 from app.bot.states import SearchState
 from app.bot.upload import start_upload
@@ -55,6 +60,12 @@ async def menu_my_purchases(message: Message, state: FSMContext):
 async def menu_chats(message: Message, state: FSMContext):
     await state.clear()
     await cmd_my_chats(message)
+
+
+@router.message(F.text == "Мои продажи")
+async def menu_my_sales(message: Message, state: FSMContext):
+    await state.clear()
+    await cmd_my_sales(message)
 
 
 @router.message(F.text == "Удалить аккаунт")
