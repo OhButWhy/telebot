@@ -161,6 +161,11 @@ class ContactThread(Base):
     )
     created_at = Column(DateTime, default=datetime.utcnow)
     material = relationship("Material")
+    messages = relationship(
+        "ChatMessage",
+        back_populates="contact_thread",
+        order_by="ChatMessage.id",
+    )
 
 
 class Report(Base):
@@ -236,16 +241,10 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, index=True)
-    transaction_id = Column(
-        Integer,
-        ForeignKey("transactions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
     contact_thread_id = Column(
         Integer,
         ForeignKey("contact_threads.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     sender_id = Column(
@@ -256,3 +255,5 @@ class ChatMessage(Base):
     text = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    contact_thread = relationship("ContactThread", back_populates="messages")

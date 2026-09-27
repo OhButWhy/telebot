@@ -341,45 +341,30 @@ async def list_user_transactions(session: AsyncSession, buyer_id: int):
 
 
 async def list_user_chats(session: AsyncSession, user_id: int):
+    """Every conversation the user takes part in, most recent first."""
     result = await session.execute(
-        select(Transaction)
-        .options(selectinload(Transaction.material))
-        .join(Transaction.material)
-        .where(
-            (Transaction.buyer_id == user_id)
-            | (Material.seller_id == user_id),
-        )
-        .order_by(Transaction.created_at.desc(), Transaction.id.desc())
-    )
-    return result.scalars().all()
-
-
-async def get_transaction_for_user(session: AsyncSession,
-                                   transaction_id: int, user_id: int):
-    result = await session.execute(
-        select(Transaction)
+        select(ContactThread)
         .options(
-            selectinload(Transaction.material).selectinload(Material.seller),
+            selectinload(ContactThread.material).selectinload(Material.seller),
+            selectinload(ContactThread.messages),
         )
         .where(
-            Transaction.id == transaction_id,
-            (Transaction.buyer_id == user_id)
-            | (Material.seller_id == user_id),
+            (ContactThread.buyer_id == user_id)
+            | (ContactThread.seller_id == user_id),
         )
-        .join(Transaction.material)
     )
-    return result.scalars().first()
+    threads = [thread for thread in result.scalars().all() if thread.messages]
+    threads.sort(key=lambda thread: thread.messages[-1].id, reverse=True)
+    return threads
 
 
 async def create_chat_message(
     session: AsyncSession,
-    transaction_id: int | None,
+    contact_thread_id: int,
     sender_id: int,
     text: str,
-    contact_thread_id: int | None = None,
 ):
     chat_message = ChatMessage(
-        transaction_id=transaction_id,
         contact_thread_id=contact_thread_id,
         sender_id=sender_id,
         text=text,
@@ -388,15 +373,6 @@ async def create_chat_message(
     await session.commit()
     await session.refresh(chat_message)
     return chat_message
-
-
-async def list_chat_messages(session: AsyncSession, transaction_id: int):
-    result = await session.execute(
-        select(ChatMessage)
-        .where(ChatMessage.transaction_id == transaction_id)
-        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
-    )
-    return result.scalars().all()
 
 
 async def delete_user_account(session: AsyncSession, tg_id: str):
