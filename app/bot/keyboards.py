@@ -135,6 +135,55 @@ def catalog_keyboard(offset: int, has_next: bool,
         ))
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
+
+def list_nav_keyboard(prefix: str, offset: int, total: int,
+                      page_size: int) -> InlineKeyboardMarkup | None:
+    buttons = []
+    if offset > 0:
+        buttons.append(InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"{prefix}:{max(0, offset - page_size)}",
+        ))
+    if offset + page_size < total:
+        buttons.append(InlineKeyboardButton(
+            text="Дальше ➡️",
+            callback_data=f"{prefix}:{offset + page_size}",
+        ))
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+def profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Вуз",
+            callback_data="profile_edit:university",
+        )],
+        [InlineKeyboardButton(
+            text="Факультет",
+            callback_data="profile_edit:faculty",
+        )],
+        [InlineKeyboardButton(
+            text="Курс",
+            callback_data="profile_edit:course",
+        )],
+        [InlineKeyboardButton(
+            text="⬅️ В меню",
+            callback_data="profile_back",
+        )],
+    ])
+
+
+def profile_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="profile_back",
+        ),
+    ]])
+
+
 def delete_account_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(

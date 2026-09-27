@@ -1,6 +1,7 @@
 import logging
 
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -146,23 +147,29 @@ async def show_catalog_page(message: Message, subject_id: int, topic_id: int = 0
 
 
 @router.callback_query(F.data == "browse_subjects")
-async def browse_subjects_callback(callback: CallbackQuery):
+async def browse_subjects_callback(callback: CallbackQuery,
+                                   state: FSMContext):
+    await state.clear()
     await callback.answer()
     await show_subjects(callback.message, callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith("browse_subject:"))
-async def browse_subject_callback(callback: CallbackQuery):
+async def browse_subject_callback(callback: CallbackQuery,
+                                  state: FSMContext):
     subject_id = int(callback.data.split(":", 1)[1])
+    await state.clear()
     await callback.answer()
     await show_catalog_page(callback.message, subject_id, 0,
                             callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith("browse_topic:"))
-async def browse_topic_callback(callback: CallbackQuery):
+async def browse_topic_callback(callback: CallbackQuery,
+                                state: FSMContext):
     parts = callback.data.split(":")
     offset = int(parts[3]) if len(parts) > 3 else 0
+    await state.clear()
     await callback.answer()
     await show_catalog_page(
         callback.message,
@@ -174,10 +181,12 @@ async def browse_topic_callback(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("browse_topics:"))
-async def browse_topics_page_callback(callback: CallbackQuery):
+async def browse_topics_page_callback(callback: CallbackQuery,
+                                      state: FSMContext):
     _, subject_id, topic_id, _, materials_offset, topics_offset = (
         callback.data.split(":")
     )
+    await state.clear()
     await callback.answer()
     await show_catalog_page(
         callback.message,
@@ -190,10 +199,12 @@ async def browse_topics_page_callback(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("browse_materials:"))
-async def browse_materials_page_callback(callback: CallbackQuery):
+async def browse_materials_page_callback(callback: CallbackQuery,
+                                         state: FSMContext):
     _, subject_id, topic_id, topics_offset, _, materials_offset = (
         callback.data.split(":")
     )
+    await state.clear()
     await callback.answer()
     await show_catalog_page(
         callback.message,

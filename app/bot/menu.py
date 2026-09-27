@@ -1,3 +1,8 @@
+"""Text-menu entry points.
+
+Every button clears the FSM first: otherwise a leftover state (e.g. an open
+chat) would swallow the user's next plain message.
+"""
 import logging
 
 from aiogram import F, Router
@@ -16,42 +21,43 @@ router = Router()
 
 
 @router.message(F.text == "Каталог")
-async def menu_catalog(message: Message):
+async def menu_catalog(message: Message, state: FSMContext):
+    await state.clear()
     await show_subjects(message)
 
 
 @router.message(F.text == "Поиск")
 async def menu_search(message: Message, state: FSMContext):
+    await state.clear()
     await state.set_state(SearchState.waiting_query)
     await message.answer("Введи название, предмет или преподавателя:")
 
 
 @router.message(F.text == "Загрузить")
 async def menu_upload(message: Message, state: FSMContext):
+    await state.clear()
     await start_upload(message, state)
 
 
 @router.message(F.text == "Мои материалы")
-async def menu_my_materials(message: Message):
+async def menu_my_materials(message: Message, state: FSMContext):
+    await state.clear()
     await cmd_my_materials(message)
 
 
 @router.message(F.text == "Мои получения")
-async def menu_my_purchases(message: Message):
+async def menu_my_purchases(message: Message, state: FSMContext):
+    await state.clear()
     await cmd_my_purchases(message)
 
 
-@router.message(F.text.in_({"Профиль", "👤 Профиль", "⚙️ Профиль"}))
-async def menu_profile(message: Message, state: FSMContext):
-    await edit_profile(message, state)
-
-
 @router.message(F.text == "Чаты")
-async def menu_chats(message: Message):
+async def menu_chats(message: Message, state: FSMContext):
+    await state.clear()
     await cmd_my_chats(message)
 
 
 @router.message(F.text == "Удалить аккаунт")
-async def menu_delete_account(message: Message):
+async def menu_delete_account(message: Message, state: FSMContext):
+    await state.clear()
     await cmd_delete_account(message)
-

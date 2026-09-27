@@ -286,13 +286,25 @@ async def get_material(session: AsyncSession, material_id: int):
     return result.scalars().first()
 
 
-async def list_user_materials(session: AsyncSession, seller_id: int):
-    result = await session.execute(
+async def list_user_materials(session: AsyncSession, seller_id: int,
+                              limit: int | None = None,
+                              offset: int = 0):
+    query = (
         select(Material)
         .where(Material.seller_id == seller_id)
         .order_by(Material.created_at.desc(), Material.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
     return result.scalars().all()
+
+
+async def count_user_materials(session: AsyncSession, seller_id: int) -> int:
+    result = await session.execute(
+        select(func.count(Material.id)).where(Material.seller_id == seller_id)
+    )
+    return result.scalar_one()
 
 
 async def get_or_create_transaction(session: AsyncSession, material_id: int,
@@ -330,32 +342,100 @@ async def get_user_transaction_for_material(session: AsyncSession,
     return result.scalars().first()
 
 
-async def list_user_transactions(session: AsyncSession, buyer_id: int):
-    result = await session.execute(
+async def list_user_transactions(session: AsyncSession, buyer_id: int,
+                                 limit: int | None = None,
+                                 offset: int = 0):
+    query = (
         select(Transaction)
         .options(selectinload(Transaction.material))
         .where(Transaction.buyer_id == buyer_id)
         .order_by(Transaction.created_at.desc(), Transaction.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
     return result.scalars().all()
 
 
-async def list_user_chats(session: AsyncSession, user_id: int):
-    """Every conversation the user takes part in, most recent first."""
+async def count_user_transactions(session: AsyncSession, buyer_id: int) -> int:
     result = await session.execute(
+        select(func.count(Transaction.id)).where(
+            Transaction.buyer_id == buyer_id
+        )
+    )
+    return result.scalar_one()
+
+
+async def list_user_chats(session: AsyncSession, user_id: int,
+                          limit: int | None = None, offset: int = 0):
+    """Every conversation the user takes part in, most recent first."""
+    latest = (
+        select(
+            ContactThread.id.label("thread_id"),
+            func.max(ChatMessage.id).label("last_id"),
+        )
+        .join(ContactThread.messages)
+        .where(
+            (ContactThread.buyer_id == user_id)
+            | (ContactThread.seller_id == user_id),
+        )
+        .group_by(ContactThread.id)
+        .subquery()
+    )
+    query = (
         select(ContactThread)
+        .join(latest, latest.c.thread_id == ContactThread.id)
         .options(
             selectinload(ContactThread.material).selectinload(Material.seller),
             selectinload(ContactThread.messages),
         )
+        .order_by(latest.c.last_id.desc())
+    )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def count_user_chats(session: AsyncSession, user_id: int) -> int:
+    result = await session.execute(
+        select(func.count(func.distinct(ContactThread.id)))
+        .join(ContactThread.messages)
         .where(
             (ContactThread.buyer_id == user_id)
             | (ContactThread.seller_id == user_id),
         )
     )
-    threads = [thread for thread in result.scalars().all() if thread.messages]
-    threads.sort(key=lambda thread: thread.messages[-1].id, reverse=True)
-    return threads
+    return result.scalar_one()
+
+
+async def unread_counts_by_thread(session: AsyncSession,
+                                  user_id: int) -> dict[int, int]:
+    """Unread incoming messages per thread, keyed by thread id."""
+    result = await session.execute(
+        select(ChatMessage.contact_thread_id, func.count(ChatMessage.id))
+        .where(
+            ChatMessage.is_read.is_(False),
+            ChatMessage.sender_id != user_id,
+        )
+        .group_by(ChatMessage.contact_thread_id)
+    )
+    return {thread_id: count for thread_id, count in result.all()}
+
+
+async def mark_thread_read(session: AsyncSession, thread_id: int,
+                           user_id: int):
+    """Mark incoming messages of the thread as read for this user."""
+    await session.execute(
+        update(ChatMessage)
+        .where(
+            ChatMessage.contact_thread_id == thread_id,
+            ChatMessage.sender_id != user_id,
+            ChatMessage.is_read.is_(False),
+        )
+        .values(is_read=True)
+    )
+    await session.commit()
 
 
 async def create_chat_message(

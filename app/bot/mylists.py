@@ -8,10 +8,14 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.keyboards import (
     chat_keyboard,
     edit_material_keyboard,
+    list_nav_keyboard,
     material_caption,
 )
 from app.bot.states import ChatState
 from app.db.queries import (
+    count_user_chats,
+    count_user_materials,
+    count_user_transactions,
     create_chat_message,
     get_contact_thread_for_user,
     get_material,
@@ -22,21 +26,28 @@ from app.db.queries import (
     list_user_chats,
     list_user_materials,
     list_user_transactions,
+    mark_thread_read,
+    unread_counts_by_thread,
 )
 from app.db.session import async_session_maker
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+MY_PAGE_SIZE = 5
 
-@router.message(Command("my_materials"))
-async def cmd_my_materials(message: Message):
+
+async def render_my_materials(message: Message, telegram_user_id: int,
+                              offset: int = 0):
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(telegram_user_id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
-        materials = await list_user_materials(session, user.id)
+        materials = await list_user_materials(
+            session, user.id, limit=MY_PAGE_SIZE, offset=offset
+        )
+        total = await count_user_materials(session, user.id)
 
     if not materials:
         await message.answer("Ты ещё не загрузил материалы.")
@@ -46,16 +57,27 @@ async def cmd_my_materials(message: Message):
             material_caption(material, with_author=False),
             reply_markup=edit_material_keyboard(material.id),
         )
+    nav = list_nav_keyboard(
+        "my_materials", offset, total, MY_PAGE_SIZE
+    )
+    if nav:
+        await message.answer(
+            f"Материалы: {offset + 1}–{offset + len(materials)} из {total}",
+            reply_markup=nav,
+        )
 
 
-@router.message(Command("my_purchases"))
-async def cmd_my_purchases(message: Message):
+async def render_my_purchases(message: Message, telegram_user_id: int,
+                              offset: int = 0):
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(telegram_user_id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
-        transactions = await list_user_transactions(session, user.id)
+        transactions = await list_user_transactions(
+            session, user.id, limit=MY_PAGE_SIZE, offset=offset
+        )
+        total = await count_user_transactions(session, user.id)
         threads = []
         for transaction in transactions:
             material = transaction.material
@@ -72,16 +94,28 @@ async def cmd_my_purchases(message: Message):
             f"Получен материал: {material.title}",
             reply_markup=chat_keyboard(thread.id, "💬 Написать продавцу"),
         )
+    nav = list_nav_keyboard(
+        "my_purchases", offset, total, MY_PAGE_SIZE
+    )
+    if nav:
+        await message.answer(
+            f"Получения: {offset + 1}–{offset + len(threads)} из {total}",
+            reply_markup=nav,
+        )
 
 
-@router.message(Command("my_chats"))
-async def cmd_my_chats(message: Message):
+async def render_my_chats(message: Message, telegram_user_id: int,
+                          offset: int = 0):
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(telegram_user_id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
-        threads = await list_user_chats(session, user.id)
+        threads = await list_user_chats(
+            session, user.id, limit=MY_PAGE_SIZE, offset=offset
+        )
+        total = await count_user_chats(session, user.id)
+        unread = await unread_counts_by_thread(session, user.id)
 
     if not threads:
         await message.answer("У тебя пока нет чатов.")
@@ -91,12 +125,58 @@ async def cmd_my_chats(message: Message):
         preview = last.text.replace("\n", " ")
         if len(preview) > 60:
             preview = preview[:60] + "…"
+        badge = unread.get(thread.id)
+        title = f"💬 {thread.material.title}"
+        if badge:
+            title += f" 🔴 {badge}"
         await message.answer(
-            f"💬 {thread.material.title}\n"
+            f"{title}\n"
             f"{'Ты' if last.sender_id == user.id else 'Собеседник'}: "
             f"{preview}",
             reply_markup=chat_keyboard(thread.id),
         )
+    nav = list_nav_keyboard("my_chats", offset, total, MY_PAGE_SIZE)
+    if nav:
+        await message.answer(
+            f"Чаты: {offset + 1}–{offset + len(threads)} из {total}",
+            reply_markup=nav,
+        )
+
+
+@router.message(Command("my_materials"))
+async def cmd_my_materials(message: Message):
+    await render_my_materials(message, message.from_user.id)
+
+
+@router.message(Command("my_purchases"))
+async def cmd_my_purchases(message: Message):
+    await render_my_purchases(message, message.from_user.id)
+
+
+@router.message(Command("my_chats"))
+async def cmd_my_chats(message: Message):
+    await render_my_chats(message, message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("my_materials:"))
+async def my_materials_page(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await callback.answer()
+    await render_my_materials(callback.message, callback.from_user.id, offset)
+
+
+@router.callback_query(F.data.startswith("my_purchases:"))
+async def my_purchases_page(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await callback.answer()
+    await render_my_purchases(callback.message, callback.from_user.id, offset)
+
+
+@router.callback_query(F.data.startswith("my_chats:"))
+async def my_chats_page(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await callback.answer()
+    await render_my_chats(callback.message, callback.from_user.id, offset)
 
 
 @router.callback_query(F.data.startswith("chat:"))
@@ -113,6 +193,7 @@ async def open_chat(callback: CallbackQuery, state: FSMContext):
             await callback.answer("Чат недоступен.", show_alert=True)
             return
         messages = await list_contact_messages(session, thread.id)
+        await mark_thread_read(session, thread.id, user.id)
 
     await state.set_state(ChatState.waiting_message)
     await state.update_data(contact_thread_id=thread.id)
@@ -191,6 +272,7 @@ async def contact_author(callback: CallbackQuery, state: FSMContext):
             session, material.id, buyer.id, material.seller_id
         )
         messages = await list_contact_messages(session, thread.id)
+        await mark_thread_read(session, thread.id, buyer.id)
     await state.set_state(ChatState.waiting_message)
     await state.update_data(contact_thread_id=thread.id)
     if messages:
