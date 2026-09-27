@@ -24,6 +24,8 @@ from app.db.queries import (
     get_or_create_contact_thread,
     get_transaction_for_user,
     get_user_transaction_for_material,
+    count_materials,
+    count_topics,
     get_subject,
     get_topic,
     get_user_by_id,
@@ -95,18 +97,21 @@ async def menu_chats(message: Message):
     await cmd_my_chats(message)
 
 
-@router.message(F.text == "Настройки")
-async def menu_settings(message: Message):
+@router.message(F.text == "Удалить аккаунт")
+async def menu_delete_account(message: Message):
     await cmd_delete_account(message)
 
 
-def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="Открыть карточку",
-            callback_data=f"material:{material_id}",
-        ),
-    ]])
+def material_caption(material, with_author: bool = True) -> str:
+    lines = [
+        material.title,
+        f"Предмет: {material.subject}",
+        f"Преподаватель: {material.professor}",
+    ]
+    if with_author:
+        author = material.seller.username if material.seller else None
+        lines.append(f"by {author or 'неизвестный автор'}")
+    return "\n".join(lines)
 
 
 def material_detail_keyboard(material_id: int) -> InlineKeyboardMarkup:
@@ -180,19 +185,6 @@ def delete_account_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
-def delete_material_keyboard(material_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="Удалить материал",
-            callback_data=f"delete_material:confirm:{material_id}",
-        ),
-        InlineKeyboardButton(
-            text="Отмена",
-            callback_data="delete_material:cancel",
-        ),
-    ]])
-
-
 def edit_material_keyboard(material_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -235,34 +227,58 @@ def browse_subject_keyboard(subjects) -> InlineKeyboardMarkup:
     )
 
 
-def browse_topic_keyboard(subject_id: int, topic_id: int):
+PAGE_SIZE = 10
+
+
+def materials_word(count: int) -> str:
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return "материалов"
+    last = count % 10
+    if last == 1:
+        return "материал"
+    if last in (2, 3, 4):
+        return "материала"
+    return "материалов"
+
+
+def nav_keyboard(subject_id: int, topic_id: int,
+                 parent_topic_id: int | None = None) -> list[list]:
     rows = []
     if topic_id:
+        target = parent_topic_id or 0
         rows.append([InlineKeyboardButton(
-            text="Открыть топик",
-            callback_data=f"browse_topic:{subject_id}:{topic_id}",
+            text="⬅️ Назад в раздел",
+            callback_data=f"browse_topic:{subject_id}:{target}:0",
         )])
     rows.append([InlineKeyboardButton(
-        text="К предметам",
+        text="📚 К предметам",
         callback_data="browse_subjects",
     )])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return rows
 
 
-def browse_page_keyboard(callback_prefix: str, parts: str, offset: int,
-                         has_next: bool):
+def _page_row(prefix: str, subject_id: int, topic_id: int,
+              topics_offset: int, materials_offset: int, offset: int,
+              total: int, label: str) -> list:
     buttons = []
     if offset > 0:
         buttons.append(InlineKeyboardButton(
-            text="Назад",
-            callback_data=f"{callback_prefix}:{parts}:{offset - 10}",
+            text=f"⬅️ {label}",
+            callback_data=(
+                f"{prefix}:{subject_id}:{topic_id}:"
+                f"{topics_offset}:{materials_offset}:{max(0, offset - PAGE_SIZE)}"
+            ),
         ))
-    if has_next:
+    if offset + PAGE_SIZE < total:
         buttons.append(InlineKeyboardButton(
-            text="Дальше",
-            callback_data=f"{callback_prefix}:{parts}:{offset + 10}",
+            text=f"{label} ➡️",
+            callback_data=(
+                f"{prefix}:{subject_id}:{topic_id}:"
+                f"{topics_offset}:{materials_offset}:{offset + PAGE_SIZE}"
+            ),
         ))
-    return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+    return buttons
 
 
 async def show_subjects(message: Message, telegram_user_id: int | None = None):
@@ -279,83 +295,107 @@ async def show_subjects(message: Message, telegram_user_id: int | None = None):
     )
 
 
-async def show_topic_page(message: Message, subject_id: int, topic_id: int,
-                          telegram_user_id: int | None = None,
-                          offset: int = 0, show_topics: bool = True,
-                          show_materials: bool = True):
+async def show_catalog_page(message: Message, subject_id: int, topic_id: int = 0,
+                            telegram_user_id: int | None = None,
+                            topics_offset: int = 0,
+                            materials_offset: int = 0):
+    """Read-only catalog view: topics first, then free materials.
+
+    topic_id == 0 shows the subject root (top-level topics + untopiced
+    materials). Any other value opens that topic (child topics + its own
+    materials).
+    """
     user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
         user = await get_user_by_tg(session, str(user_id))
         subject = await get_subject(session, subject_id)
+        current_topic = await get_topic(session, topic_id) if topic_id else None
         topics = await list_topics(
             session,
             subject_id,
             parent_topic_id=topic_id or None,
             limit=11,
-            offset=offset,
-        ) if show_topics else []
-        current_topic = await get_topic(session, topic_id) if topic_id else None
+            offset=topics_offset,
+        )
+        topic_total = await count_topics(
+            session, subject_id, parent_topic_id=topic_id or None
+        )
         materials = await list_materials(
             session,
             user.university if user else "",
             subject_id=subject_id,
             topic_id=-1 if topic_id == 0 else topic_id,
             limit=11,
-            offset=offset,
-        ) if show_materials else []
-    if not user or not subject:
-        await message.answer("Сначала заполни профиль через /start.")
-        return
-    topic_name = current_topic.name if current_topic else "Без топика"
-    await message.answer(
-        f"{subject.name}" if topic_id == 0
-        else f"{subject.name} → {topic_name}"
-    )
-    if show_topics:
-        if topics:
-            await message.answer("Топики:")
-            for topic in topics:
-                await message.answer(
-                    f"Топик: {topic.name}",
-                    reply_markup=browse_topic_keyboard(
-                        subject_id, topic.id
-                    ),
-                )
-            await message.answer(
-                "Страницы топиков:",
-                reply_markup=browse_page_keyboard(
-                    "browse_subject_page", str(subject_id), offset,
-                    len(topics) > 10,
-                ),
-            )
-        elif topic_id == 0:
-            await message.answer("В этом предмете пока нет топиков.")
-        await message.answer(
-            "Материалы без топика:" if topic_id == 0
-            else "Материалы в этом топике:"
-        ) if show_materials else None
-    if show_materials and not materials:
-        await message.answer("Материалов в этом разделе пока нет.")
-    elif show_materials:
-        for material in materials[:10]:
-            await message.answer(
-                f"{material.title}\n"
-                f"Предмет: {material.subject}\n"
-                f"Преподаватель: {material.professor}",
-                reply_markup=material_keyboard(material.id),
-            )
-        await message.answer(
-            "Страницы материалов:",
-            reply_markup=browse_page_keyboard(
-                "browse_material_page",
-                f"{subject_id}:{topic_id}",
-                offset,
-                len(materials) > 10,
-            ),
+            offset=materials_offset,
         )
+        material_total = await count_materials(
+            session,
+            user.university if user else "",
+            subject_id=subject_id,
+            topic_id=-1 if topic_id == 0 else topic_id,
+        )
+    if not user or not subject:
+        await message.answer("Профиль не найден. Нажми /start.")
+        return
+
+    header = (
+        f"📚 {subject.name}" if topic_id == 0
+        else f"📚 {subject.name} → {current_topic.name if current_topic else 'Топик'}"
+    )
+    lines = [header]
+    rows: list[list] = []
+
+    if topics:
+        lines.append(f"\n📂 Топики ({topic_total}):")
+        for index, topic in enumerate(topics[:PAGE_SIZE], start=1):
+            lines.append(
+                f"{index + topics_offset}. {topic.name} — "
+                f"{topic.material_count} {materials_word(topic.material_count)}"
+            )
+            rows.append([InlineKeyboardButton(
+                text=f"📂 {topic.name} ({topic.material_count})",
+                callback_data=f"browse_topic:{subject_id}:{topic.id}:0",
+            )])
+        topic_row = _page_row(
+            "browse_topics", subject_id, topic_id,
+            topics_offset, materials_offset, topics_offset, topic_total,
+            "Топики",
+        )
+        if topic_row:
+            rows.append(topic_row)
+    elif topic_id == 0:
+        lines.append("\n📂 Топиков пока нет.")
+
+    if materials:
+        lines.append(f"\n📄 Материалы ({material_total}):")
+        for index, material in enumerate(materials[:PAGE_SIZE], start=1):
+            lines.append(
+                f"{index + materials_offset}. {material.title} "
+                f"(by {material.seller.username if material.seller else '—'})"
+            )
+            rows.append([InlineKeyboardButton(
+                text=f"📄 {material.title} — by "
+                     f"{material.seller.username if material.seller else '—'}",
+                callback_data=f"material:{material.id}",
+            )])
+        material_row = _page_row(
+            "browse_materials", subject_id, topic_id,
+            topics_offset, materials_offset, materials_offset, material_total,
+            "Материалы",
+        )
+        if material_row:
+            rows.append(material_row)
+    else:
+        lines.append("\n📄 Материалов в этом разделе пока нет.")
+
+    rows.extend(nav_keyboard(
+        subject_id,
+        topic_id,
+        current_topic.parent_topic_id if current_topic else None,
+    ))
     await message.answer(
-        "Действия:",
-        reply_markup=browse_topic_keyboard(subject_id, topic_id),
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
 
@@ -368,48 +408,54 @@ async def browse_subjects_callback(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("browse_subject:"))
 async def browse_subject_callback(callback: CallbackQuery):
     subject_id = int(callback.data.split(":", 1)[1])
-    await show_topic_page(callback.message, subject_id, 0,
-                          callback.from_user.id)
     await callback.answer()
+    await show_catalog_page(callback.message, subject_id, 0,
+                            callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith("browse_topic:"))
 async def browse_topic_callback(callback: CallbackQuery):
     parts = callback.data.split(":")
+    offset = int(parts[3]) if len(parts) > 3 else 0
     await callback.answer()
-    await show_topic_page(
+    await show_catalog_page(
         callback.message,
         int(parts[1]),
         int(parts[2]),
         callback.from_user.id,
+        materials_offset=offset,
     )
 
 
-@router.callback_query(F.data.startswith("browse_subject_page:"))
-async def browse_subject_page_callback(callback: CallbackQuery):
-    _, subject_id, offset = callback.data.split(":")
-    await callback.answer()
-    await show_topic_page(
-        callback.message,
-        int(subject_id),
-        0,
-        callback.from_user.id,
-        int(offset),
-        show_materials=False,
+@router.callback_query(F.data.startswith("browse_topics:"))
+async def browse_topics_page_callback(callback: CallbackQuery):
+    _, subject_id, topic_id, _, materials_offset, topics_offset = (
+        callback.data.split(":")
     )
-
-
-@router.callback_query(F.data.startswith("browse_material_page:"))
-async def browse_material_page_callback(callback: CallbackQuery):
-    _, subject_id, topic_id, offset = callback.data.split(":")
     await callback.answer()
-    await show_topic_page(
+    await show_catalog_page(
         callback.message,
         int(subject_id),
         int(topic_id),
         callback.from_user.id,
-        int(offset),
-        show_topics=False,
+        topics_offset=int(topics_offset),
+        materials_offset=int(materials_offset),
+    )
+
+
+@router.callback_query(F.data.startswith("browse_materials:"))
+async def browse_materials_page_callback(callback: CallbackQuery):
+    _, subject_id, topic_id, topics_offset, _, materials_offset = (
+        callback.data.split(":")
+    )
+    await callback.answer()
+    await show_catalog_page(
+        callback.message,
+        int(subject_id),
+        int(topic_id),
+        callback.from_user.id,
+        topics_offset=int(topics_offset),
+        materials_offset=int(materials_offset),
     )
 
 
@@ -556,18 +602,14 @@ async def start_upload(message: Message, state: FSMContext,
 
 
 @router.message(Command("cancel"))
-async def cancel_action(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Текущее действие отменено.")
-
-
 @router.message(F.text == "Отмена")
-async def cancel_button(message: Message, state: FSMContext):
+async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Текущее действие отменено.", reply_markup=MAIN_MENU)
 
 
 @router.message(Command("skip"))
+@router.message(EditMaterialState.waiting_file, F.text == "Пропустить")
 async def skip_edit_file(message: Message, state: FSMContext):
     if await state.get_state() != EditMaterialState.waiting_file.state:
         await message.answer("Сейчас нечего пропускать.")
@@ -588,11 +630,6 @@ async def skip_edit_file(message: Message, state: FSMContext):
         "Материал сохранён без замены файла."
         if updated else "Материал не найден."
     )
-
-
-@router.message(EditMaterialState.waiting_file, F.text == "Пропустить")
-async def skip_edit_file_button(message: Message, state: FSMContext):
-    await skip_edit_file(message, state)
 
 
 async def get_user_for_message(message: Message):
@@ -679,6 +716,7 @@ async def prompt_subject_selection(message: Message, state: FSMContext):
 
 
 @router.message(UploadMaterial.waiting_documents, F.text == "Готово")
+@router.message(UploadMaterial.waiting_documents, Command("done"))
 async def finish_document_upload(message: Message, state: FSMContext):
     data = await state.get_data()
     if data.get("subject_id"):
@@ -686,11 +724,6 @@ async def finish_document_upload(message: Message, state: FSMContext):
         await message.answer("Введи название материала:")
         return
     await prompt_subject_selection(message, state)
-
-
-@router.message(UploadMaterial.waiting_documents, Command("done"))
-async def finish_document_upload_command(message: Message, state: FSMContext):
-    await finish_document_upload(message, state)
 
 
 @router.message(UploadMaterial.waiting_document)
@@ -763,11 +796,6 @@ async def create_topic_for_upload(message: Message, state: FSMContext):
             creator_id=creator.id,
             name=name,
         )
-    if data.get("topic_mode") == "browse":
-        await state.clear()
-        await message.answer(f"Топик «{topic.name}» создан.")
-        await show_topic_page(message, topic.subject_id, topic.id)
-        return
     await state.update_data(topic_id=topic.id)
     await state.set_state(UploadMaterial.waiting_title)
     await message.answer("Топик создан. Введи название материала:")
@@ -840,7 +868,6 @@ async def upload_description(message: Message, state: FSMContext):
             topic_id=data.get("topic_id"),
             subject=data["subject"],
             professor=data["professor"],
-            work_type="Материал",
             description=description,
         )
         for file_id in data["file_ids"][1:]:
@@ -883,9 +910,10 @@ async def search_query(message: Message, state: FSMContext):
 
 
 async def send_catalog(message: Message, search_term: str | None = None,
-                       offset: int = 0):
+                       offset: int = 0, telegram_user_id: int | None = None):
+    user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(user_id))
         if not user:
             await message.answer("Сначала нажми /start, для регистрации!")
             return
@@ -893,8 +921,11 @@ async def send_catalog(message: Message, search_term: str | None = None,
             session,
             user.university,
             search_term=search_term,
-            limit=11,
+            limit=PAGE_SIZE + 1,
             offset=offset,
+        )
+        total = await count_materials(
+            session, user.university, search_term=search_term
         )
 
     if not materials:
@@ -904,18 +935,25 @@ async def send_catalog(message: Message, search_term: str | None = None,
         await message.answer(text)
         return
 
-    has_next = len(materials) > 10
-    for material in materials[:10]:
-        await message.answer(
-            f"{material.title}\n"
-            f"Предмет: {material.subject}\n"
-            f"Преподаватель: {material.professor}\n"
-            f"Цена: {material.price:.0f} ₽",
-            reply_markup=material_keyboard(material.id),
+    has_next = len(materials) > PAGE_SIZE
+    lines = [f"🔍 Найдено: {total}", ""]
+    rows: list[list] = []
+    for index, material in enumerate(materials[:PAGE_SIZE], start=1):
+        author = material.seller.username if material.seller else "—"
+        lines.append(
+            f"{index + offset}. {material.title} — {material.price:.0f} ₽ "
+            f"(by {author})"
         )
+        rows.append([InlineKeyboardButton(
+            text=f"📄 {material.title} — {material.price:.0f} ₽",
+            callback_data=f"material:{material.id}",
+        )])
+    page_keyboard = catalog_keyboard(offset, has_next, search_term)
+    if page_keyboard:
+        rows.extend(page_keyboard.inline_keyboard)
     await message.answer(
-        f"Страница {offset // 10 + 1}",
-        reply_markup=catalog_keyboard(offset, has_next, search_term),
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
 
@@ -929,14 +967,15 @@ async def catalog_page(callback: CallbackQuery):
         callback.message,
         search_term=search_term,
         offset=offset,
+        telegram_user_id=callback.from_user.id,
     )
 
 
 @router.message(Command("delete_account"))
 async def cmd_delete_account(message: Message):
     await message.answer(
-        "Аккаунт будет обезличен, а твои материалы станут недоступны. "
-        "История получений и чатов сохранится без персональных данных.\n\n"
+        "Аккаунт будет обезличен, а все твои материалы и связанные с ними "
+        "история получений, рейтинги и чаты будут безвозвратно удалены.\n\n"
         "Подтвердить удаление?",
         reply_markup=delete_account_keyboard(),
     )
@@ -987,7 +1026,7 @@ async def confirm_delete_material(callback: CallbackQuery):
                               show_alert=True)
         return
     await callback.answer("Материал удалён")
-    await callback.message.edit_text("Материал скрыт из каталога.")
+    await callback.message.edit_text("Материал удалён из каталога.")
 
 
 @router.callback_query(F.data.startswith("get_material:"))
@@ -996,7 +1035,7 @@ async def get_material_callback(callback: CallbackQuery):
     async with async_session_maker() as session:
         buyer = await get_user_by_tg(session, str(callback.from_user.id))
         material = await get_material(session, material_id)
-        if not buyer or not material or material.status != "active":
+        if not buyer or not material:
             await callback.answer("Материал недоступен.", show_alert=True)
             return
         if material.seller_id == buyer.id:
@@ -1060,7 +1099,7 @@ async def contact_author(callback: CallbackQuery, state: FSMContext):
     async with async_session_maker() as session:
         buyer = await get_user_by_tg(session, str(callback.from_user.id))
         material = await get_material(session, material_id)
-        if not buyer or not material or material.status != "active":
+        if not buyer or not material:
             await callback.answer("Материал недоступен.", show_alert=True)
             return
         if material.seller_id == buyer.id:
@@ -1232,7 +1271,7 @@ async def material_detail_callback(callback: CallbackQuery):
     async with async_session_maker() as session:
         user = await get_user_by_tg(session, str(callback.from_user.id))
         material = await get_material(session, material_id)
-        if not user or not material or material.status != "active":
+        if not user or not material:
             await callback.answer("Материал недоступен.", show_alert=True)
             return
         if material.seller.university != user.university:
@@ -1242,10 +1281,7 @@ async def material_detail_callback(callback: CallbackQuery):
 
     description = material.description or "Описание отсутствует."
     await callback.message.answer(
-        f"{material.title}\n"
-        f"Предмет: {material.subject}\n"
-        f"Преподаватель: {material.professor}\n"
-        f"Тип: {material.work_type}\n"
+        f"{material_caption(material)}\n"
         f"Описание: {description}",
         reply_markup=material_detail_keyboard(material.id),
     )
@@ -1266,13 +1302,8 @@ async def cmd_my_materials(message: Message):
         return
     for material in materials:
         await message.answer(
-            f"{material.title}\n"
-            f"Предмет: {material.subject}\n"
-            f"Статус: {material.status}",
-            reply_markup=(
-                edit_material_keyboard(material.id)
-                if material.status == "active" else None
-            ),
+            material_caption(material, with_author=False),
+            reply_markup=edit_material_keyboard(material.id),
         )
 
 

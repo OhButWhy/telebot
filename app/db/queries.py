@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import cast, Float, func, or_, select, update
+from sqlalchemy import cast, delete, Float, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.db.models import (
@@ -60,7 +60,6 @@ async def create_material(session: AsyncSession, seller_id: int,
                           sort_order: int = 0,
                           subject: str = "Разное",
                           professor: str = "Не указан",
-                          work_type: str = "Документ",
                           description: str = ""):
     material = Material(
         seller_id=seller_id,
@@ -70,11 +69,9 @@ async def create_material(session: AsyncSession, seller_id: int,
         title=title,
         subject=subject,
         professor=professor,
-        work_type=work_type,
         price=price,
         description=description,
         telegram_file_id=file_id,
-        status="active"
     )
     session.add(material)
     await session.commit()
@@ -129,15 +126,12 @@ async def list_topics(session: AsyncSession, subject_id: int,
                       limit: int = 10, offset: int = 0):
     result = await session.execute(
         select(Topic)
-        .outerjoin(Material, Material.topic_id == Topic.id)
         .where(
             Topic.subject_id == subject_id,
             Topic.parent_topic_id == parent_topic_id,
         )
-        .group_by(Topic.id)
         .order_by(
             Topic.material_count.desc(),
-            func.count(Material.id).desc(),
             Topic.name.asc(),
             Topic.id.asc(),
         )
@@ -145,6 +139,17 @@ async def list_topics(session: AsyncSession, subject_id: int,
         .offset(offset)
     )
     return result.scalars().all()
+
+
+async def count_topics(session: AsyncSession, subject_id: int,
+                       parent_topic_id: int | None = None) -> int:
+    result = await session.execute(
+        select(func.count(Topic.id)).where(
+            Topic.subject_id == subject_id,
+            Topic.parent_topic_id == parent_topic_id,
+        )
+    )
+    return result.scalar_one()
 
 
 async def get_topic(session: AsyncSession, topic_id: int):
@@ -171,14 +176,10 @@ async def get_subject(session: AsyncSession, subject_id: int):
     return result.scalars().first()
 
 
-async def list_materials(session: AsyncSession, university: str,
-                         search_term: str | None = None,
-                         subject_id: int | None = None,
-                         topic_id: int | None = None,
-                         limit: int = 10, offset: int = 0):
+def _material_filters(university: str, search_term: str | None,
+                      subject_id: int | None, topic_id: int | None):
     filters = [
         User.university == university,
-        Material.status == "active",
     ]
     if search_term:
         pattern = f"%{search_term}%"
@@ -193,6 +194,29 @@ async def list_materials(session: AsyncSession, university: str,
         filters.append(Material.topic_id.is_(None))
     elif topic_id is not None:
         filters.append(Material.topic_id == topic_id)
+    return filters
+
+
+async def count_materials(session: AsyncSession, university: str,
+                          search_term: str | None = None,
+                          subject_id: int | None = None,
+                          topic_id: int | None = None) -> int:
+    result = await session.execute(
+        select(func.count(Material.id))
+        .join(Material.seller)
+        .where(*_material_filters(
+            university, search_term, subject_id, topic_id,
+        ))
+    )
+    return result.scalar_one()
+
+
+async def list_materials(session: AsyncSession, university: str,
+                         search_term: str | None = None,
+                         subject_id: int | None = None,
+                         topic_id: int | None = None,
+                         limit: int = 10, offset: int = 0):
+    filters = _material_filters(university, search_term, subject_id, topic_id)
     thanks = (
         select(func.count(MaterialRating.id))
         .where(
@@ -212,6 +236,7 @@ async def list_materials(session: AsyncSession, university: str,
     rating_score = cast(thanks, Float) / (cast(not_ouch, Float) + 1.0)
     query = (
         select(Material)
+        .options(selectinload(Material.seller))
         .join(Material.seller)
         .where(*filters)
         .order_by(
@@ -379,11 +404,7 @@ async def delete_user_account(session: AsyncSession, tg_id: str):
     if not user:
         return False
 
-    await session.execute(
-        update(Material)
-        .where(Material.seller_id == user.id)
-        .values(status="deleted")
-    )
+    await _delete_materials_by_seller(session, user.id)
     user.tg_id = f"deleted_{uuid4().hex}"
     user.username = None
     user.university = "Удалённый пользователь"
@@ -393,19 +414,38 @@ async def delete_user_account(session: AsyncSession, tg_id: str):
     return True
 
 
+async def _delete_materials_by_seller(session: AsyncSession, seller_id: int):
+    """Hard-delete a seller's materials and fix affected topic counts.
+
+    Uses SQL DELETE so the database-owned ON DELETE CASCADE removes the
+    dependent files, transactions, reports, ratings and threads.
+    """
+    topic_rows = await session.execute(
+        select(Material.topic_id)
+        .where(Material.seller_id == seller_id, Material.topic_id.is_not(None))
+    )
+    per_topic: dict[int, int] = {}
+    for topic_id, in topic_rows.all():
+        per_topic[topic_id] = per_topic.get(topic_id, 0) + 1
+    result = await session.execute(
+        delete(Material).where(Material.seller_id == seller_id)
+    )
+    await session.commit()
+    for topic_id, amount in per_topic.items():
+        await change_topic_material_counts(session, topic_id, -amount)
+    return result.rowcount
+
+
 async def delete_material(session: AsyncSession, material_id: int,
                           seller_id: int):
     material = await session.get(Material, material_id)
     if not material or material.seller_id != seller_id:
         return False
     result = await session.execute(
-        update(Material)
-        .where(
+        delete(Material).where(
             Material.id == material_id,
             Material.seller_id == seller_id,
-            Material.status == "active",
         )
-        .values(status="deleted")
     )
     await session.commit()
     if result.rowcount and material.topic_id:

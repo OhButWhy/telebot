@@ -15,7 +15,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
             KeyboardButton(text="Мои получения"),
             KeyboardButton(text="Профиль"),
         ],
-        [KeyboardButton(text="Чаты"), KeyboardButton(text="Настройки")],
+        [KeyboardButton(text="Чаты"), KeyboardButton(text="Удалить аккаунт")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Выбери действие",
