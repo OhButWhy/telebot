@@ -43,6 +43,7 @@ class Material(Base):
     seller_id = Column(Integer,
                        ForeignKey("users.id", ondelete="CASCADE"),
                        nullable=False)
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=True)
     title = Column(String, nullable=False)
     subject = Column(String, nullable=False)          # Предмет
     professor = Column(String, nullable=False)        # Преподаватель
@@ -53,10 +54,27 @@ class Material(Base):
     status = Column(String, default="active", nullable=False)  # active/deleted
 
     seller = relationship("User", back_populates="materials")
+    subject_ref = relationship("Subject", back_populates="materials")
     transactions = relationship("Transaction", back_populates="material")
 
     # Полнотекстовый индекс будет добавлен через миграцию (tsvector)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Subject(Base):
+    __tablename__ = "subjects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+    parent_id = Column(Integer, ForeignKey("subjects.id"), nullable=True)
+
+    parent = relationship(
+        "Subject",
+        remote_side=[id],
+        back_populates="children",
+    )
+    children = relationship("Subject", back_populates="parent")
+    materials = relationship("Material", back_populates="subject_ref")
 
 
 class Transaction(Base):

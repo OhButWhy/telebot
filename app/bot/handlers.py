@@ -13,16 +13,20 @@ from app.db.queries import (
     create_material,
     create_user,
     create_chat_message,
+    delete_material,
     delete_user_account,
     get_material,
     get_or_create_transaction,
     get_transaction_for_user,
+    get_subject,
     get_user_by_id,
     get_user_by_tg,
     list_chat_messages,
     list_user_materials,
+    list_user_chats,
     list_user_transactions,
     list_materials,
+    list_subjects,
     update_user_profile,
 )
 from app.bot.keyboards import MAIN_MENU
@@ -62,14 +66,14 @@ async def menu_my_purchases(message: Message):
     await cmd_my_purchases(message)
 
 
-@router.message(F.text.in_({"👤 Профиль", "⚙️ Профиль"}))
+@router.message(F.text.in_({"Профиль", "👤 Профиль", "⚙️ Профиль"}))
 async def menu_profile(message: Message, state: FSMContext):
     await edit_profile(message, state)
 
 
 @router.message(F.text == "Чаты")
 async def menu_chats(message: Message):
-    await cmd_my_purchases(message)
+    await cmd_my_chats(message)
 
 
 def material_keyboard(material_id: int) -> InlineKeyboardMarkup:
@@ -129,6 +133,37 @@ def delete_account_keyboard() -> InlineKeyboardMarkup:
             callback_data="delete_account:cancel",
         ),
     ]])
+
+
+def delete_material_keyboard(material_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Удалить материал",
+            callback_data=f"delete_material:confirm:{material_id}",
+        ),
+        InlineKeyboardButton(
+            text="Отмена",
+            callback_data="delete_material:cancel",
+        ),
+    ]])
+
+
+def subject_keyboard(subjects) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            text=subject.name,
+            callback_data=f"subject:{subject.id}",
+        )
+        for subject in subjects
+    ]
+    buttons.append(InlineKeyboardButton(
+        text="Другое",
+        callback_data="subject:other",
+    ))
+    return InlineKeyboardMarkup(
+        inline_keyboard=[buttons[index:index + 2]
+                         for index in range(0, len(buttons), 2)]
+    )
 
 
 @router.message(Command("start"))
@@ -276,8 +311,14 @@ async def upload_document(message: Message, state: FSMContext):
         return
 
     await state.update_data(file_id=message.document.file_id)
-    await state.set_state(UploadMaterial.waiting_title)
-    await message.answer("Введи название материала:")
+    async with async_session_maker() as session:
+        subjects = await list_subjects(session)
+    await state.update_data(subjects_loaded=True)
+    await state.set_state(UploadMaterial.waiting_subject)
+    await message.answer(
+        "Выбери предмет или направление:",
+        reply_markup=subject_keyboard(subjects),
+    )
 
 
 @router.message(UploadMaterial.waiting_document)
@@ -287,6 +328,45 @@ async def upload_document_invalid(message: Message):
     )
 
 
+@router.callback_query(
+    UploadMaterial.waiting_subject,
+    F.data.startswith("subject:"),
+)
+async def upload_subject_callback(callback: CallbackQuery, state: FSMContext):
+    value = callback.data.split(":", 1)[1]
+    if value == "other":
+        await state.set_state(UploadMaterial.waiting_custom_subject)
+        await callback.message.answer("Напиши название предмета:")
+        await callback.answer()
+        return
+
+    async with async_session_maker() as session:
+        subject = await get_subject(session, int(value))
+    if not subject:
+        await callback.answer("Предмет недоступен.", show_alert=True)
+        return
+    await state.update_data(subject_id=subject.id, subject=subject.name)
+    await state.set_state(UploadMaterial.waiting_title)
+    await callback.message.answer("Введи название материала:")
+    await callback.answer()
+
+
+@router.message(UploadMaterial.waiting_subject, F.text)
+async def upload_subject_button_required(message: Message):
+    await message.answer("Выбери предмет кнопкой выше или нажми «Другое».")
+
+
+@router.message(UploadMaterial.waiting_custom_subject, F.text)
+async def upload_custom_subject(message: Message, state: FSMContext):
+    subject = message.text.strip()
+    if not subject or len(subject) > 100:
+        await message.answer("Предмет должен содержать от 1 до 100 символов.")
+        return
+    await state.update_data(subject=subject, subject_id=None)
+    await state.set_state(UploadMaterial.waiting_title)
+    await message.answer("Введи название материала:")
+
+
 @router.message(UploadMaterial.waiting_title, F.text)
 async def upload_title(message: Message, state: FSMContext):
     title = message.text.strip()
@@ -294,17 +374,6 @@ async def upload_title(message: Message, state: FSMContext):
         await message.answer("Название должно содержать от 1 до 200 символов.")
         return
     await state.update_data(title=title)
-    await state.set_state(UploadMaterial.waiting_subject)
-    await message.answer("Введи название предмета:")
-
-
-@router.message(UploadMaterial.waiting_subject, F.text)
-async def upload_subject(message: Message, state: FSMContext):
-    subject = message.text.strip()
-    if not subject or len(subject) > 100:
-        await message.answer("Предмет должен содержать от 1 до 100 символов.")
-        return
-    await state.update_data(subject=subject)
     await state.set_state(UploadMaterial.waiting_professor)
     await message.answer("Введи фамилию или имя преподавателя:")
 
@@ -358,6 +427,7 @@ async def upload_description(message: Message, state: FSMContext):
             title=data["title"],
             price=0,
             file_id=data["file_id"],
+            subject_id=data.get("subject_id"),
             subject=data["subject"],
             professor=data["professor"],
             work_type=data["work_type"],
@@ -483,6 +553,30 @@ async def confirm_delete_account(callback: CallbackQuery):
     )
 
 
+@router.callback_query(F.data == "delete_material:cancel")
+async def cancel_delete_material(callback: CallbackQuery):
+    await callback.answer("Удаление отменено")
+    await callback.message.edit_text("Удаление материала отменено.")
+
+
+@router.callback_query(F.data.startswith("delete_material:confirm:"))
+async def confirm_delete_material(callback: CallbackQuery):
+    material_id = int(callback.data.rsplit(":", 1)[1])
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(callback.from_user.id))
+        deleted = bool(user) and await delete_material(
+            session,
+            material_id,
+            user.id,
+        )
+    if not deleted:
+        await callback.answer("Материал уже удалён или недоступен.",
+                              show_alert=True)
+        return
+    await callback.answer("Материал удалён")
+    await callback.message.edit_text("Материал скрыт из каталога.")
+
+
 @router.callback_query(F.data.startswith("get_material:"))
 async def get_material_callback(callback: CallbackQuery):
     material_id = int(callback.data.split(":", 1)[1])
@@ -560,6 +654,10 @@ async def cmd_my_materials(message: Message):
             f"{material.title}\n"
             f"Предмет: {material.subject}\n"
             f"Статус: {material.status}",
+            reply_markup=(
+                delete_material_keyboard(material.id)
+                if material.status == "active" else None
+            ),
         )
 
 
@@ -579,6 +677,26 @@ async def cmd_my_purchases(message: Message):
         await message.answer(
             f"Получен материал: {transaction.material.title}\n"
             f"Статус: {transaction.status}\n"
+            f"Транзакция: {transaction.id}",
+            reply_markup=chat_keyboard(transaction.id),
+        )
+
+
+@router.message(Command("my_chats"))
+async def cmd_my_chats(message: Message):
+    async with async_session_maker() as session:
+        user = await get_user_by_tg(session, str(message.from_user.id))
+        if not user:
+            await message.answer("Сначала нажми /start, для регистрации!")
+            return
+        transactions = await list_user_chats(session, user.id)
+
+    if not transactions:
+        await message.answer("У тебя пока нет чатов.")
+        return
+    for transaction in transactions:
+        await message.answer(
+            f"Чат по материалу: {transaction.material.title}\n"
             f"Транзакция: {transaction.id}",
             reply_markup=chat_keyboard(transaction.id),
         )
@@ -652,5 +770,6 @@ async def send_chat_message(message: Message, state: FSMContext):
             f"Новое сообщение по материалу «{transaction.material.title}»:\n"
             f"{text}"
         ),
+        reply_markup=chat_keyboard(transaction.id),
     )
     await message.answer("Сообщение отправлено.")
