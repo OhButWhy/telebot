@@ -250,7 +250,10 @@ async def list_materials(session: AsyncSession, university: str,
     rating_score = cast(thanks, Float) / (cast(not_ouch, Float) + 1.0)
     query = (
         select(Material)
-        .options(selectinload(Material.seller))
+        .options(
+            selectinload(Material.seller),
+            selectinload(Material.subject_ref),
+        )
         .join(Material.seller)
         .where(*filters)
         .order_by(
@@ -294,6 +297,7 @@ async def get_material(session: AsyncSession, material_id: int):
         .options(
             selectinload(Material.seller),
             selectinload(Material.files),
+            selectinload(Material.subject_ref),
         )
         .where(Material.id == material_id)
     )

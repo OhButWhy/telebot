@@ -62,10 +62,17 @@ def author_name(material) -> str:
     return "удалённый автор"
 
 
+def material_subject(material) -> str:
+    """Catalog subject is the source of truth; free-text is the fallback."""
+    if material.subject_ref is not None:
+        return material.subject_ref.name
+    return material.subject or "Разное"
+
+
 def material_caption(material, with_author: bool = True) -> str:
     lines = [
         material.title,
-        f"Предмет: {material.subject}",
+        f"Предмет: {material_subject(material)}",
         f"Преподаватель: {material.professor}",
     ]
     if with_author:
