@@ -84,6 +84,8 @@ async def create_material(session: AsyncSession, seller_id: int,
         telegram_file_id=file_id,
     ))
     await session.commit()
+    if topic_id:
+        await change_topic_material_counts(session, topic_id, 1)
     return material
 
 
@@ -108,9 +110,11 @@ async def list_subjects(session: AsyncSession):
 
 
 async def create_topic(session: AsyncSession, subject_id: int,
-                       creator_id: int, name: str):
+                       creator_id: int, name: str,
+                       parent_topic_id: int | None = None):
     topic = Topic(
         subject_id=subject_id,
+        parent_topic_id=parent_topic_id,
         creator_id=creator_id,
         name=name,
     )
@@ -120,13 +124,44 @@ async def create_topic(session: AsyncSession, subject_id: int,
     return topic
 
 
-async def list_topics(session: AsyncSession, subject_id: int):
+async def list_topics(session: AsyncSession, subject_id: int,
+                      parent_topic_id: int | None = None,
+                      limit: int = 10, offset: int = 0):
     result = await session.execute(
         select(Topic)
-        .where(Topic.subject_id == subject_id)
-        .order_by(Topic.name.asc(), Topic.id.asc())
+        .outerjoin(Material, Material.topic_id == Topic.id)
+        .where(
+            Topic.subject_id == subject_id,
+            Topic.parent_topic_id == parent_topic_id,
+        )
+        .group_by(Topic.id)
+        .order_by(
+            Topic.material_count.desc(),
+            func.count(Material.id).desc(),
+            Topic.name.asc(),
+            Topic.id.asc(),
+        )
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
+
+
+async def get_topic(session: AsyncSession, topic_id: int):
+    result = await session.execute(select(Topic).where(Topic.id == topic_id))
+    return result.scalars().first()
+
+
+async def change_topic_material_counts(session: AsyncSession, topic_id: int,
+                                       delta: int):
+    current_id = topic_id
+    while current_id:
+        topic = await session.get(Topic, current_id)
+        if not topic:
+            break
+        topic.material_count = max(0, topic.material_count + delta)
+        current_id = topic.parent_topic_id
+    await session.commit()
 
 
 async def get_subject(session: AsyncSession, subject_id: int):
@@ -154,7 +189,9 @@ async def list_materials(session: AsyncSession, university: str,
         ))
     if subject_id is not None:
         filters.append(Material.subject_id == subject_id)
-    if topic_id is not None:
+    if topic_id == -1:
+        filters.append(Material.topic_id.is_(None))
+    elif topic_id is not None:
         filters.append(Material.topic_id == topic_id)
     thanks = (
         select(func.count(MaterialRating.id))
@@ -358,6 +395,9 @@ async def delete_user_account(session: AsyncSession, tg_id: str):
 
 async def delete_material(session: AsyncSession, material_id: int,
                           seller_id: int):
+    material = await session.get(Material, material_id)
+    if not material or material.seller_id != seller_id:
+        return False
     result = await session.execute(
         update(Material)
         .where(
@@ -368,6 +408,8 @@ async def delete_material(session: AsyncSession, material_id: int,
         .values(status="deleted")
     )
     await session.commit()
+    if result.rowcount and material.topic_id:
+        await change_topic_material_counts(session, material.topic_id, -1)
     return result.rowcount > 0
 
 

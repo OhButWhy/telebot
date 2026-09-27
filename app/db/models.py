@@ -112,7 +112,13 @@ class Topic(Base):
         ForeignKey("subjects.id", ondelete="CASCADE"),
         nullable=False,
     )
+    parent_topic_id = Column(
+        Integer,
+        ForeignKey("topics.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     name = Column(String, nullable=False)
+    material_count = Column(Integer, default=0, nullable=False)
     creator_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -121,6 +127,12 @@ class Topic(Base):
 
     subject = relationship("Subject", back_populates="topics")
     creator = relationship("User")
+    parent_topic = relationship(
+        "Topic",
+        remote_side=[id],
+        back_populates="child_topics",
+    )
+    child_topics = relationship("Topic", back_populates="parent_topic")
     materials = relationship("Material", back_populates="topic")
 
 

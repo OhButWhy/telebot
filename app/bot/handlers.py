@@ -25,6 +25,7 @@ from app.db.queries import (
     get_transaction_for_user,
     get_user_transaction_for_material,
     get_subject,
+    get_topic,
     get_user_by_id,
     get_user_by_tg,
     list_chat_messages,
@@ -241,31 +242,33 @@ def browse_topic_keyboard(subject_id: int, topic_id: int):
             text="Открыть топик",
             callback_data=f"browse_topic:{subject_id}:{topic_id}",
         )])
-    else:
-        rows.append([InlineKeyboardButton(
-            text="Все материалы предмета",
-            callback_data=f"browse_topic:{subject_id}:0",
-        )])
-    rows.extend([
-        [InlineKeyboardButton(
-            text="Добавить материал",
-            callback_data=f"add_material:{subject_id}:{topic_id}",
-        )],
-        [InlineKeyboardButton(
-            text="Добавить топик",
-            callback_data=f"browse_topic_new:{subject_id}",
-        )],
-        [InlineKeyboardButton(
-            text="К предметам",
-            callback_data="browse_subjects",
-        )],
-    ])
+    rows.append([InlineKeyboardButton(
+        text="К предметам",
+        callback_data="browse_subjects",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def show_subjects(message: Message):
+def browse_page_keyboard(callback_prefix: str, parts: str, offset: int,
+                         has_next: bool):
+    buttons = []
+    if offset > 0:
+        buttons.append(InlineKeyboardButton(
+            text="Назад",
+            callback_data=f"{callback_prefix}:{parts}:{offset - 10}",
+        ))
+    if has_next:
+        buttons.append(InlineKeyboardButton(
+            text="Дальше",
+            callback_data=f"{callback_prefix}:{parts}:{offset + 10}",
+        ))
+    return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+
+
+async def show_subjects(message: Message, telegram_user_id: int | None = None):
+    user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(user_id))
         subjects = await list_subjects(session)
     if not user:
         await message.answer("Сначала нажми /start, для регистрации!")
@@ -276,31 +279,64 @@ async def show_subjects(message: Message):
     )
 
 
-async def show_topic_page(message: Message, subject_id: int, topic_id: int):
+async def show_topic_page(message: Message, subject_id: int, topic_id: int,
+                          telegram_user_id: int | None = None,
+                          offset: int = 0, show_topics: bool = True,
+                          show_materials: bool = True):
+    user_id = telegram_user_id or message.from_user.id
     async with async_session_maker() as session:
-        user = await get_user_by_tg(session, str(message.from_user.id))
+        user = await get_user_by_tg(session, str(user_id))
         subject = await get_subject(session, subject_id)
-        topics = await list_topics(session, subject_id)
+        topics = await list_topics(
+            session,
+            subject_id,
+            parent_topic_id=topic_id or None,
+            limit=11,
+            offset=offset,
+        ) if show_topics else []
+        current_topic = await get_topic(session, topic_id) if topic_id else None
         materials = await list_materials(
             session,
             user.university if user else "",
             subject_id=subject_id,
-            topic_id=topic_id if topic_id else None,
+            topic_id=-1 if topic_id == 0 else topic_id,
             limit=11,
-        )
+            offset=offset,
+        ) if show_materials else []
     if not user or not subject:
         await message.answer("Сначала заполни профиль через /start.")
         return
-    topic_name = "Без топика"
-    if topic_id:
-        topic_name = next(
-            (topic.name for topic in topics if topic.id == topic_id),
-            "Топик",
-        )
-    await message.answer(f"{subject.name} → {topic_name}")
-    if not materials:
-        await message.answer("Материалов пока нет. Добавь первый материал.")
-    else:
+    topic_name = current_topic.name if current_topic else "Без топика"
+    await message.answer(
+        f"{subject.name}" if topic_id == 0
+        else f"{subject.name} → {topic_name}"
+    )
+    if show_topics:
+        if topics:
+            await message.answer("Топики:")
+            for topic in topics:
+                await message.answer(
+                    f"Топик: {topic.name}",
+                    reply_markup=browse_topic_keyboard(
+                        subject_id, topic.id
+                    ),
+                )
+            await message.answer(
+                "Страницы топиков:",
+                reply_markup=browse_page_keyboard(
+                    "browse_subject_page", str(subject_id), offset,
+                    len(topics) > 10,
+                ),
+            )
+        elif topic_id == 0:
+            await message.answer("В этом предмете пока нет топиков.")
+        await message.answer(
+            "Материалы без топика:" if topic_id == 0
+            else "Материалы в этом топике:"
+        ) if show_materials else None
+    if show_materials and not materials:
+        await message.answer("Материалов в этом разделе пока нет.")
+    elif show_materials:
         for material in materials[:10]:
             await message.answer(
                 f"{material.title}\n"
@@ -308,6 +344,15 @@ async def show_topic_page(message: Message, subject_id: int, topic_id: int):
                 f"Преподаватель: {material.professor}",
                 reply_markup=material_keyboard(material.id),
             )
+        await message.answer(
+            "Страницы материалов:",
+            reply_markup=browse_page_keyboard(
+                "browse_material_page",
+                f"{subject_id}:{topic_id}",
+                offset,
+                len(materials) > 10,
+            ),
+        )
     await message.answer(
         "Действия:",
         reply_markup=browse_topic_keyboard(subject_id, topic_id),
@@ -317,33 +362,14 @@ async def show_topic_page(message: Message, subject_id: int, topic_id: int):
 @router.callback_query(F.data == "browse_subjects")
 async def browse_subjects_callback(callback: CallbackQuery):
     await callback.answer()
-    await show_subjects(callback.message)
+    await show_subjects(callback.message, callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith("browse_subject:"))
 async def browse_subject_callback(callback: CallbackQuery):
     subject_id = int(callback.data.split(":", 1)[1])
-    async with async_session_maker() as session:
-        topics = await list_topics(session, subject_id)
-        subject = await get_subject(session, subject_id)
-    if not subject:
-        await callback.answer("Предмет недоступен.", show_alert=True)
-        return
-    if not topics:
-        await callback.message.answer(
-            f"{subject.name}: топиков пока нет. "
-            "Создай первый или добавь материал."
-        )
-    else:
-        for topic in topics:
-            await callback.message.answer(
-                f"Топик: {topic.name}",
-                reply_markup=browse_topic_keyboard(subject_id, topic.id),
-            )
-    await callback.message.answer(
-        "Можно добавить материал без топика:",
-        reply_markup=browse_topic_keyboard(subject_id, 0),
-    )
+    await show_topic_page(callback.message, subject_id, 0,
+                          callback.from_user.id)
     await callback.answer()
 
 
@@ -351,35 +377,40 @@ async def browse_subject_callback(callback: CallbackQuery):
 async def browse_topic_callback(callback: CallbackQuery):
     parts = callback.data.split(":")
     await callback.answer()
-    await show_topic_page(callback.message, int(parts[1]), int(parts[2]))
-
-
-@router.callback_query(F.data.startswith("browse_topic_new:"))
-async def add_topic_from_navigation(
-    callback: CallbackQuery,
-    state: FSMContext,
-):
-    subject_id = int(callback.data.split(":", 2)[2])
-    await state.clear()
-    await state.update_data(
-        topic_subject_id=subject_id,
-        topic_mode="browse",
-    )
-    await state.set_state(TopicState.waiting_name)
-    await callback.message.answer("Введи название нового топика:")
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("add_material:"))
-async def add_material_from_topic(callback: CallbackQuery, state: FSMContext):
-    _, subject_id, topic_id = callback.data.split(":")
-    await start_upload(
+    await show_topic_page(
         callback.message,
-        state,
-        subject_id=int(subject_id),
-        topic_id=int(topic_id) or None,
+        int(parts[1]),
+        int(parts[2]),
+        callback.from_user.id,
     )
+
+
+@router.callback_query(F.data.startswith("browse_subject_page:"))
+async def browse_subject_page_callback(callback: CallbackQuery):
+    _, subject_id, offset = callback.data.split(":")
     await callback.answer()
+    await show_topic_page(
+        callback.message,
+        int(subject_id),
+        0,
+        callback.from_user.id,
+        int(offset),
+        show_materials=False,
+    )
+
+
+@router.callback_query(F.data.startswith("browse_material_page:"))
+async def browse_material_page_callback(callback: CallbackQuery):
+    _, subject_id, topic_id, offset = callback.data.split(":")
+    await callback.answer()
+    await show_topic_page(
+        callback.message,
+        int(subject_id),
+        int(topic_id),
+        callback.from_user.id,
+        int(offset),
+        show_topics=False,
+    )
 
 
 def topic_keyboard(topics, subject_id: int) -> InlineKeyboardMarkup:
@@ -778,19 +809,6 @@ async def upload_professor(message: Message, state: FSMContext):
         )
         return
     await state.update_data(professor=professor)
-    await state.set_state(UploadMaterial.waiting_work_type)
-    await message.answer("Введи тип работы, например: конспект, лабораторная:")
-
-
-@router.message(UploadMaterial.waiting_work_type, F.text)
-async def upload_work_type(message: Message, state: FSMContext):
-    work_type = message.text.strip()
-    if not work_type or len(work_type) > 100:
-        await message.answer(
-            "Тип работы должен содержать от 1 до 100 символов."
-        )
-        return
-    await state.update_data(work_type=work_type)
     await state.set_state(UploadMaterial.waiting_description)
     await message.answer("Добавь описание до 2000 символов или напиши «нет»:")
 
@@ -822,13 +840,14 @@ async def upload_description(message: Message, state: FSMContext):
             topic_id=data.get("topic_id"),
             subject=data["subject"],
             professor=data["professor"],
-            work_type=data["work_type"],
+            work_type="Материал",
             description=description,
         )
         for file_id in data["file_ids"][1:]:
             await add_material_file(session, material.id, file_id)
     await state.clear()
     await message.answer(f"Материал «{material.title}» добавлен в каталог.")
+    await show_main_menu(message)
 
 
 @router.message(Command("catalog"))

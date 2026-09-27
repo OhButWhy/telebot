@@ -9,7 +9,6 @@ class UploadMaterial(StatesGroup):
     waiting_topic = State()
     waiting_custom_subject = State()
     waiting_professor = State()
-    waiting_work_type = State()
     waiting_description = State()
 
 
