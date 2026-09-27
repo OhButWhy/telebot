@@ -18,6 +18,10 @@ class ProfileSetup(StatesGroup):
     waiting_course = State()
 
 
+class EditProfile(StatesGroup):
+    waiting_value = State()
+
+
 class ChatState(StatesGroup):
     waiting_message = State()
 

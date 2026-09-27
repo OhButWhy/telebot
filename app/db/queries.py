@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import cast, delete, Float, func, or_, select, update
+from sqlalchemy import case, cast, delete, Float, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.db.models import (
@@ -74,15 +74,15 @@ async def create_material(session: AsyncSession, seller_id: int,
         telegram_file_id=file_id,
     )
     session.add(material)
-    await session.commit()
-    await session.refresh(material)
+    await session.flush()
     session.add(MaterialFile(
         material_id=material.id,
         telegram_file_id=file_id,
     ))
-    await session.commit()
     if topic_id:
         await change_topic_material_counts(session, topic_id, 1)
+    await session.commit()
+    await session.refresh(material)
     return material
 
 
@@ -159,14 +159,28 @@ async def get_topic(session: AsyncSession, topic_id: int):
 
 async def change_topic_material_counts(session: AsyncSession, topic_id: int,
                                        delta: int):
+    """Bump a topic and all its ancestors, without committing.
+
+    Callers keep this inside the same transaction as the material change so
+    the counters can never drift from the actual rows.
+    """
     current_id = topic_id
-    while current_id:
-        topic = await session.get(Topic, current_id)
-        if not topic:
+    seen = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        result = await session.execute(
+            update(Topic)
+            .where(Topic.id == current_id)
+            .values(material_count=case(
+                (Topic.material_count + delta < 0, 0),
+                else_=Topic.material_count + delta,
+            ))
+            .returning(Topic.parent_topic_id)
+        )
+        row = result.first()
+        if row is None:
             break
-        topic.material_count = max(0, topic.material_count + delta)
-        current_id = topic.parent_topic_id
-    await session.commit()
+        current_id = row[0]
 
 
 async def get_subject(session: AsyncSession, subject_id: int):
@@ -236,7 +250,10 @@ async def list_materials(session: AsyncSession, university: str,
     rating_score = cast(thanks, Float) / (cast(not_ouch, Float) + 1.0)
     query = (
         select(Material)
-        .options(selectinload(Material.seller))
+        .options(
+            selectinload(Material.seller),
+            selectinload(Material.subject_ref),
+        )
         .join(Material.seller)
         .where(*filters)
         .order_by(
@@ -280,19 +297,32 @@ async def get_material(session: AsyncSession, material_id: int):
         .options(
             selectinload(Material.seller),
             selectinload(Material.files),
+            selectinload(Material.subject_ref),
         )
         .where(Material.id == material_id)
     )
     return result.scalars().first()
 
 
-async def list_user_materials(session: AsyncSession, seller_id: int):
-    result = await session.execute(
+async def list_user_materials(session: AsyncSession, seller_id: int,
+                              limit: int | None = None,
+                              offset: int = 0):
+    query = (
         select(Material)
         .where(Material.seller_id == seller_id)
         .order_by(Material.created_at.desc(), Material.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
     return result.scalars().all()
+
+
+async def count_user_materials(session: AsyncSession, seller_id: int) -> int:
+    result = await session.execute(
+        select(func.count(Material.id)).where(Material.seller_id == seller_id)
+    )
+    return result.scalar_one()
 
 
 async def get_or_create_transaction(session: AsyncSession, material_id: int,
@@ -330,56 +360,137 @@ async def get_user_transaction_for_material(session: AsyncSession,
     return result.scalars().first()
 
 
-async def list_user_transactions(session: AsyncSession, buyer_id: int):
-    result = await session.execute(
+async def list_user_transactions(session: AsyncSession, buyer_id: int,
+                                 limit: int | None = None,
+                                 offset: int = 0):
+    query = (
         select(Transaction)
         .options(selectinload(Transaction.material))
         .where(Transaction.buyer_id == buyer_id)
         .order_by(Transaction.created_at.desc(), Transaction.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
     return result.scalars().all()
 
 
-async def list_user_chats(session: AsyncSession, user_id: int):
+async def count_user_transactions(session: AsyncSession, buyer_id: int) -> int:
     result = await session.execute(
-        select(Transaction)
-        .options(selectinload(Transaction.material))
-        .join(Transaction.material)
-        .where(
-            (Transaction.buyer_id == user_id)
-            | (Material.seller_id == user_id),
+        select(func.count(Transaction.id)).where(
+            Transaction.buyer_id == buyer_id
         )
+    )
+    return result.scalar_one()
+
+
+async def list_seller_sales(session: AsyncSession, seller_id: int,
+                            limit: int | None = None, offset: int = 0):
+    """Transactions for the seller's materials, newest first."""
+    query = (
+        select(Transaction)
+        .join(Transaction.material)
+        .options(
+            selectinload(Transaction.material),
+            selectinload(Transaction.buyer),
+        )
+        .where(Material.seller_id == seller_id)
         .order_by(Transaction.created_at.desc(), Transaction.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
     return result.scalars().all()
 
 
-async def get_transaction_for_user(session: AsyncSession,
-                                   transaction_id: int, user_id: int):
+async def count_seller_sales(session: AsyncSession, seller_id: int) -> int:
     result = await session.execute(
-        select(Transaction)
-        .options(
-            selectinload(Transaction.material).selectinload(Material.seller),
-        )
-        .where(
-            Transaction.id == transaction_id,
-            (Transaction.buyer_id == user_id)
-            | (Material.seller_id == user_id),
-        )
+        select(func.count(Transaction.id))
         .join(Transaction.material)
+        .where(Material.seller_id == seller_id)
     )
-    return result.scalars().first()
+    return result.scalar_one()
+
+
+async def list_user_chats(session: AsyncSession, user_id: int,
+                          limit: int | None = None, offset: int = 0):
+    """Every conversation the user takes part in, most recent first."""
+    latest = (
+        select(
+            ContactThread.id.label("thread_id"),
+            func.max(ChatMessage.id).label("last_id"),
+        )
+        .join(ContactThread.messages)
+        .where(
+            (ContactThread.buyer_id == user_id)
+            | (ContactThread.seller_id == user_id),
+        )
+        .group_by(ContactThread.id)
+        .subquery()
+    )
+    query = (
+        select(ContactThread)
+        .join(latest, latest.c.thread_id == ContactThread.id)
+        .options(
+            selectinload(ContactThread.material).selectinload(Material.seller),
+            selectinload(ContactThread.messages),
+        )
+        .order_by(latest.c.last_id.desc())
+    )
+    if limit is not None:
+        query = query.limit(limit).offset(offset)
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def count_user_chats(session: AsyncSession, user_id: int) -> int:
+    result = await session.execute(
+        select(func.count(func.distinct(ContactThread.id)))
+        .join(ContactThread.messages)
+        .where(
+            (ContactThread.buyer_id == user_id)
+            | (ContactThread.seller_id == user_id),
+        )
+    )
+    return result.scalar_one()
+
+
+async def unread_counts_by_thread(session: AsyncSession,
+                                  user_id: int) -> dict[int, int]:
+    """Unread incoming messages per thread, keyed by thread id."""
+    result = await session.execute(
+        select(ChatMessage.contact_thread_id, func.count(ChatMessage.id))
+        .where(
+            ChatMessage.is_read.is_(False),
+            ChatMessage.sender_id != user_id,
+        )
+        .group_by(ChatMessage.contact_thread_id)
+    )
+    return {thread_id: count for thread_id, count in result.all()}
+
+
+async def mark_thread_read(session: AsyncSession, thread_id: int,
+                           user_id: int):
+    """Mark incoming messages of the thread as read for this user."""
+    await session.execute(
+        update(ChatMessage)
+        .where(
+            ChatMessage.contact_thread_id == thread_id,
+            ChatMessage.sender_id != user_id,
+            ChatMessage.is_read.is_(False),
+        )
+        .values(is_read=True)
+    )
+    await session.commit()
 
 
 async def create_chat_message(
     session: AsyncSession,
-    transaction_id: int | None,
+    contact_thread_id: int,
     sender_id: int,
     text: str,
-    contact_thread_id: int | None = None,
 ):
     chat_message = ChatMessage(
-        transaction_id=transaction_id,
         contact_thread_id=contact_thread_id,
         sender_id=sender_id,
         text=text,
@@ -388,15 +499,6 @@ async def create_chat_message(
     await session.commit()
     await session.refresh(chat_message)
     return chat_message
-
-
-async def list_chat_messages(session: AsyncSession, transaction_id: int):
-    result = await session.execute(
-        select(ChatMessage)
-        .where(ChatMessage.transaction_id == transaction_id)
-        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
-    )
-    return result.scalars().all()
 
 
 async def delete_user_account(session: AsyncSession, tg_id: str):
@@ -430,9 +532,9 @@ async def _delete_materials_by_seller(session: AsyncSession, seller_id: int):
     result = await session.execute(
         delete(Material).where(Material.seller_id == seller_id)
     )
-    await session.commit()
     for topic_id, amount in per_topic.items():
         await change_topic_material_counts(session, topic_id, -amount)
+    await session.commit()
     return result.rowcount
 
 
@@ -447,9 +549,9 @@ async def delete_material(session: AsyncSession, material_id: int,
             Material.seller_id == seller_id,
         )
     )
-    await session.commit()
     if result.rowcount and material.topic_id:
         await change_topic_material_counts(session, material.topic_id, -1)
+    await session.commit()
     return result.rowcount > 0
 
 
